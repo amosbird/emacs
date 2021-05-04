@@ -32174,7 +32174,7 @@ produce_special_glyphs (struct it *it, enum display_element_type what)
   else if (what == IT_TRUNCATION)
     {
       /* Truncation glyph.  */
-      SET_GLYPH_FROM_CHAR (glyph, '$');
+      SET_GLYPH_FROM_CHAR (glyph, 0x203a);
       if (it->dp
 	  && (gc = DISP_TRUNC_GLYPH (it->dp), GLYPH_CODE_P (gc)))
 	{

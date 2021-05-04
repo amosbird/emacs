@@ -4288,7 +4288,16 @@ kbd_buffer_get_event (KBOARD **kbp,
 
 	  if (!EQ (frame, internal_last_event_frame)
 	      && !EQ (frame, selected_frame))
-	    obj = make_lispy_switch_frame (frame);
+            {
+              if (! FRAME_X_P (XFRAME (frame)))
+                if (! EQ (FRAME_TTY (XFRAME (frame))->top_frame, frame))
+                  {
+                    clear_event (&event->ie);
+                    kbd_fetch_ptr = next_kbd_event (event);
+                    break;
+                  }
+              obj = make_lispy_switch_frame (frame);
+            }
 	  internal_last_event_frame = frame;
 
 	  if (EQ (event->ie.device, Qt))
