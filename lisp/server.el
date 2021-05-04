@@ -1303,7 +1303,10 @@ The following commands are accepted by the client:
 						       frame-parameters))
 		   ;; When resuming on a tty, tty-name is nil.
 		   (tty-name
-		    (server-create-tty-frame tty-name tty-type proc))))
+                    (server-create-tty-frame tty-name
+                                             tty-type
+                                             proc
+                                             `(,(assq 'name frame-parameters))))))
 
             (process-put
              proc 'continuation
