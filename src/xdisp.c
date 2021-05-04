@@ -29389,10 +29389,6 @@ display_string (const char *string, Lisp_Object lisp_string, Lisp_Object face_st
 	{
 	  /* Add truncation mark, but don't do it if the line is
 	     truncated at a padding space.  */
-	  /* Need to do the below for the last string character as
-	     well, since it could be a double-width character, in
-	     which case the previous character ends before
-	     last_visible_x.  Thus, comparison with <=, not <.  */
 	  if (it_charpos <= it->string_nchars)
 	    {
 	      if (!FRAME_WINDOW_P (it->f))
@@ -32264,7 +32260,7 @@ produce_special_glyphs (struct it *it, enum display_element_type what)
   else if (what == IT_TRUNCATION)
     {
       /* Truncation glyph.  */
-      SET_GLYPH (glyph, '$', face_id);
+      SET_GLYPH (glyph, 0x203a, face_id);
       if (it->dp
 	  && (gc = DISP_TRUNC_GLYPH (it->dp), GLYPH_CODE_P (gc)))
 	{

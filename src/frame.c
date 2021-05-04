@@ -1720,7 +1720,7 @@ do_switch_frame (Lisp_Object frame, int track, int for_deletion, Lisp_Object nor
     }
 #endif /* HAVE_X_WINDOWS */
 
-  if (!for_deletion && FRAME_HAS_MINIBUF_P (sf))
+  if (!for_deletion && FRAME_HAS_MINIBUF_P (sf) && NILP(norecord))
     resize_mini_window (XWINDOW (FRAME_MINIBUF_WINDOW (sf)), 1);
 
   if (FRAME_TERMCAP_P (f) || FRAME_MSDOS_P (f))
@@ -3222,9 +3222,10 @@ DEFUN ("visible-frame-list", Fvisible_frame_list, Svisible_frame_list,
   (void)
 {
   Lisp_Object tail, frame, value = Qnil;
+  struct frame *f = XFRAME (frame);
 
   FOR_EACH_FRAME (tail, frame)
-    if (FRAME_VISIBLE_P (XFRAME (frame)))
+    if (FRAME_VISIBLE_P (f) || is_tty_root_frame (f))
       value = Fcons (frame, value);
 
   return value;
