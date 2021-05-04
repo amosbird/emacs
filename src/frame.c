@@ -1515,7 +1515,7 @@ do_switch_frame (Lisp_Object frame, int track, int for_deletion, Lisp_Object nor
     }
 #endif /* HAVE_X_WINDOWS */
 
-  if (!for_deletion && FRAME_HAS_MINIBUF_P (sf))
+  if (!for_deletion && FRAME_HAS_MINIBUF_P (sf) && NILP(norecord))
     resize_mini_window (XWINDOW (FRAME_MINIBUF_WINDOW (sf)), 1);
 
   if (FRAME_TERMCAP_P (f) || FRAME_MSDOS_P (f))
