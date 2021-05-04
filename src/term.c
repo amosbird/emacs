@@ -1610,10 +1610,12 @@ produce_glyphs (struct it *it)
 	{
 	  int n = nspaces;
 
-	  it->char_to_display = ' ';
+	  it->char_to_display = 0x203a;
 	  it->pixel_width = it->len = 1;
+	  append_glyph (it);
+	  it->char_to_display = ' ';
 
-	  while (n--)
+	  while (--n)
 	    append_glyph (it);
 	}
 
