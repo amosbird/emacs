@@ -28744,7 +28744,7 @@ display_string (const char *string, Lisp_Object lisp_string, Lisp_Object face_st
 	{
 	  /* Add truncation mark, but don't do it if the line is
 	     truncated at a padding space.  */
-	  if (it_charpos < it->string_nchars)
+	  if (it_charpos <= it->string_nchars)
 	    {
 	      if (!FRAME_WINDOW_P (it->f))
 		{
