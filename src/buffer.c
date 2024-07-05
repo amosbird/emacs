@@ -317,6 +317,11 @@ bset_mode_line_format (struct buffer *b, Lisp_Object val)
   b->mode_line_format_ = val;
 }
 static void
+bset_global_mode_line_format (struct buffer *b, Lisp_Object val)
+{
+  b->global_mode_line_format_ = val;
+}
+static void
 bset_mode_name (struct buffer *b, Lisp_Object val)
 {
   b->mode_name_ = val;
@@ -4703,6 +4708,7 @@ init_buffer_once (void)
 
   idx = 1;
   XSETFASTINT (BVAR (&buffer_local_flags, mode_line_format), idx); ++idx;
+  XSETFASTINT (BVAR (&buffer_local_flags, global_mode_line_format), idx); ++idx;
   XSETFASTINT (BVAR (&buffer_local_flags, abbrev_mode), idx); ++idx;
   XSETFASTINT (BVAR (&buffer_local_flags, overwrite_mode), idx); ++idx;
   XSETFASTINT (BVAR (&buffer_local_flags, auto_fill_function), idx); ++idx;
@@ -4793,6 +4799,7 @@ init_buffer_once (void)
 
   /* real setup is done in bindings.el */
   bset_mode_line_format (&buffer_defaults, build_pure_c_string ("%-"));
+  bset_global_mode_line_format (&buffer_defaults, build_pure_c_string ("%-"));
   bset_header_line_format (&buffer_defaults, Qnil);
   bset_tab_line_format (&buffer_defaults, Qnil);
   bset_abbrev_mode (&buffer_defaults, Qnil);
@@ -5198,6 +5205,10 @@ A string is printed verbatim in the mode line except for %-constructs:
   %- -- print enough dashes to fill the mode line.
   %% -- print %.
 Decimal digits after the % specify field width to which to pad.  */);
+
+  DEFVAR_PER_BUFFER ("global-mode-line-format",
+		     &BVAR (current_buffer, global_mode_line_format), Qnil,
+		     doc: /* Template for displaying mode line for a window's buffer. */);
 
   DEFVAR_PER_BUFFER ("major-mode", &BVAR (current_buffer, major_mode),
 		     Qsymbolp,

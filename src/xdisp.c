@@ -1161,6 +1161,7 @@ static int display_mode_element (struct it *, int, int, int, Lisp_Object,
 static int store_mode_line_string (const char *, Lisp_Object, bool, int, int,
 				   Lisp_Object);
 static const char *decode_mode_spec (struct window *, int, int, Lisp_Object *);
+static void display_global_mode_line (struct window *, Lisp_Object);
 static void display_menu_bar (struct window *);
 static void display_tab_bar (struct window *);
 static void update_tab_bar (struct frame *, bool);
@@ -3221,7 +3222,8 @@ init_iterator (struct it *it, struct window *w,
   if (row == NULL)
     {
       if (base_face_id == MODE_LINE_ACTIVE_FACE_ID
-	  || base_face_id == MODE_LINE_INACTIVE_FACE_ID)
+	  || base_face_id == MODE_LINE_INACTIVE_FACE_ID
+	  || base_face_id == VERTICAL_BORDER_FACE_ID)
 	row = MATRIX_MODE_LINE_ROW (w->desired_matrix);
       else if (base_face_id == TAB_LINE_FACE_ID)
 	row = MATRIX_TAB_LINE_ROW (w->desired_matrix);
@@ -14378,6 +14380,109 @@ display_tab_bar (struct window *w)
   compute_line_metrics (&it);
 }
 
+static void
+display_global_mode_line (struct window *w, Lisp_Object format)
+{
+  struct frame *f = XFRAME (WINDOW_FRAME (w));
+  Lisp_Object buf = w->contents;
+  struct it it;
+  specpdl_ref count = SPECPDL_INDEX ();
+
+  if (minibuf_level > 0 && MINI_WINDOW_P (w)
+      && WINDOW_LIVE_P (minibuf_selected_window))
+    buf = XWINDOW (minibuf_selected_window)->contents;
+
+  // TODO(amos): echo_area_window can be different from minibuf_w
+  struct window *minibuf_w = XWINDOW (FRAME_MINIBUF_WINDOW (f));
+  init_iterator (&it, w, -1, -1,
+		 f->desired_matrix->rows + minibuf_w->top_line - 1,
+		 MODE_LINE_ACTIVE_FACE_ID);
+
+  it.first_visible_x = 0;
+  it.last_visible_x = FRAME_COLS (f);
+  it.paragraph_embedding = L2R;
+
+  struct glyph_row *row = it.glyph_row;
+  clear_glyph_row (row);
+  row->enabled_p = true;
+  row->reversed_p = false;
+  row->glyphs[TEXT_AREA] = row->glyphs[LEFT_MARGIN_AREA];
+  row->glyphs[RIGHT_MARGIN_AREA] = row->glyphs[LAST_AREA];
+  row->mode_line_p = true;
+
+  record_unwind_protect (unwind_format_mode_line,
+			 format_mode_line_unwind_data (NULL, NULL,
+						       Qnil, false));
+
+  /* Temporarily make frame's keyboard the current kboard so that
+     kboard-local variables in the mode_line_format will get the right
+     values.  */
+  push_kboard (FRAME_KBOARD (it.f));
+  record_unwind_save_match_data ();
+
+  {
+    Lisp_Object mode_string
+      = Fformat_mode_line (format, Qnil, FRAME_MINIBUF_WINDOW (f),
+			   buf);
+    if (EQ (Vmode_line_compact, Qlong)
+	&& WINDOW_TOTAL_COLS (w) >= SCHARS (mode_string))
+      {
+	/* The window is wide enough; just display the mode line we
+	   just computed. */
+	display_string (NULL, mode_string, Qnil, 0, 0, &it, 0, 0, 0,
+			STRING_MULTIBYTE (mode_string));
+      }
+    else
+      {
+	/* Compress the mode line. */
+	ptrdiff_t i = 0, i_byte = 0, start = 0;
+	int prev = 0;
+
+	while (i < SCHARS (mode_string))
+	  {
+	    int c
+	      = fetch_string_char_advance (mode_string, &i, &i_byte);
+	    if (c == ' ' && prev == ' ')
+	      {
+		display_string (NULL,
+				Fsubstring (mode_string,
+					    make_fixnum (start),
+					    make_fixnum (i - 1)),
+				Qnil, 0, 0, &it, 0, 0, 0,
+				STRING_MULTIBYTE (mode_string));
+		/* Skip past the rest of the space characters. */
+		while (c == ' ' && i < SCHARS (mode_string))
+		  c = fetch_string_char_advance (mode_string, &i,
+						 &i_byte);
+		start = i - 1;
+	      }
+	    prev = c;
+	  }
+
+	/* Display the final bit. */
+	if (start < i)
+	  display_string (NULL,
+			  Fsubstring (mode_string,
+				      make_fixnum (start),
+				      make_fixnum (i)),
+			  Qnil, 0, 0, &it, 0, 0, 0,
+			  STRING_MULTIBYTE (mode_string));
+      }
+  }
+  pop_kboard ();
+
+  unbind_to (count, Qnil);
+
+  /* Fill up with spaces.  */
+  display_string (" ", Qnil, Qnil, 0, 0, &it, 10000, -1, -1, 0);
+
+  compute_line_metrics (&it);
+  it.glyph_row->full_width_p = true;
+  it.glyph_row->continued_p = false;
+  it.glyph_row->truncated_on_left_p = false;
+  it.glyph_row->truncated_on_right_p = false;
+}
+
 #ifdef HAVE_WINDOW_SYSTEM
 
 /* Set F->desired_tab_bar_string to a Lisp string representing frame
@@ -21019,14 +21124,24 @@ redisplay_window (Lisp_Object window, bool just_this_one_p)
         }
       else
         {
-          if ((FRAME_TAB_BAR_LINES (f) > 0))
-            display_tab_bar (w);
-        }
+	  if ((FRAME_TAB_BAR_LINES (f) > 0))
+	    display_tab_bar (w);
+
+	  Lisp_Object format
+	    = BVAR (&buffer_defaults, global_mode_line_format);
+	   if (!NILP (format))
+	    display_global_mode_line (w, format);
+	}
 
       gui_consider_frame_title (w->frame);
 #else
       if ((FRAME_TAB_BAR_LINES (f) > 0))
-        display_tab_bar (w);
+	display_tab_bar (w);
+
+      Lisp_Object format
+	= BVAR (&buffer_defaults, global_mode_line_format);
+	   if (!NILP (format))
+	    display_global_mode_line (w, format);
 #endif
     }
 
@@ -27391,6 +27506,10 @@ display_mode_line (struct window *w, enum face_id face_id, Lisp_Object format)
   struct face *face;
   specpdl_ref count = SPECPDL_INDEX ();
 
+  if (face_id == MODE_LINE_ACTIVE_FACE_ID
+      || face_id == MODE_LINE_INACTIVE_FACE_ID)
+    face_id = VERTICAL_BORDER_FACE_ID;
+
   init_iterator (&it, w, -1, -1, NULL, face_id);
   /* Don't extend on a previously drawn mode-line.
      This may happen if called from pos_visible_p.  */
@@ -27402,9 +27521,16 @@ display_mode_line (struct window *w, enum face_id face_id, Lisp_Object format)
     {
       it.glyph_row->tab_line_p = true;
       w->desired_matrix->tab_line_p = true;
+
+      int width = max (0, WINDOW_LEFT_MARGIN_WIDTH (w) - 5);
+      display_string (" ", Qnil, Qnil, 0, 0, &it, width, -1, -1, 0);
     }
   else if (face_id == HEADER_LINE_FACE_ID)
-    w->desired_matrix->header_line_p = true;
+    {
+      w->desired_matrix->header_line_p = true;
+      int width = max (0, WINDOW_LEFT_MARGIN_WIDTH (w) - 2);
+      display_string (" ", Qnil, Qnil, 0, 0, &it, width, -1, -1, 0);
+    }
 
   /* FIXME: This should be controlled by a user option.  But
      supporting such an option is not trivial, since the mode line is
@@ -38353,7 +38479,7 @@ init_xdisp (void)
       r->pixel_top = r->top_line * FRAME_LINE_HEIGHT (f);
       r->total_cols = FRAME_COLS (f);
       r->pixel_width = r->total_cols * FRAME_COLUMN_WIDTH (f);
-      r->total_lines = FRAME_TOTAL_LINES (f) - 1 - FRAME_MARGINS (f);
+      r->total_lines = FRAME_TOTAL_LINES (f) - 1 - 1 - FRAME_MARGINS (f);
       r->pixel_height = r->total_lines * FRAME_LINE_HEIGHT (f);
 
       m->top_line = FRAME_TOTAL_LINES (f) - 1;
