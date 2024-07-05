@@ -1652,6 +1652,9 @@ allocate_matrices_for_frame_redisplay (Lisp_Object window, int x, int y,
     {
       w = XWINDOW (window);
 
+      if (MINI_WINDOW_P (w))
+	y += 1;
+
       /* Get the dimension of the window sub-matrix for W, depending
 	 on whether this is a combination or a leaf window.  */
       if (WINDOWP (w->contents))
@@ -2479,10 +2482,15 @@ build_frame_matrix (struct frame *f)
   /* F must have a frame matrix when this function is called.  */
   eassert (!FRAME_WINDOW_P (f));
 
+  struct window *minibuf_w = XWINDOW (FRAME_MINIBUF_WINDOW (f));
+
   /* Clear all rows in the frame matrix covered by window matrices.
      Menu bar lines are not covered by windows.  */
   for (i = FRAME_TOP_MARGIN (f); i < f->desired_matrix->nrows; ++i)
-    clear_glyph_row (MATRIX_ROW (f->desired_matrix, i));
+    {
+      if (i != minibuf_w->top_line - 1)
+	clear_glyph_row (MATRIX_ROW (f->desired_matrix, i));
+    }
 
   /* Build the matrix by walking the window tree.  */
   build_frame_matrix_from_window_tree (f->desired_matrix,
@@ -2526,6 +2534,7 @@ build_frame_matrix_from_leaf_window (struct glyph_matrix *frame_matrix, struct w
   int window_y, frame_y;
   /* If non-zero, a glyph to insert at the right border of W.  */
   GLYPH right_border_glyph;
+  GLYPH right_bottom_border_glyph;
 
   SET_GLYPH_FROM_CHAR (right_border_glyph, 0);
 
@@ -2540,7 +2549,7 @@ build_frame_matrix_from_leaf_window (struct glyph_matrix *frame_matrix, struct w
 	  struct Lisp_Char_Table *dp = window_display_table (w);
 	  Lisp_Object gc;
 
-	  SET_GLYPH_FROM_CHAR (right_border_glyph, '|');
+	  SET_GLYPH_CHAR (right_border_glyph, L'│');
 	  if (dp
 	      && (gc = DISP_BORDER_GLYPH (dp), GLYPH_CODE_P (gc)))
 	    {
@@ -2550,6 +2559,9 @@ build_frame_matrix_from_leaf_window (struct glyph_matrix *frame_matrix, struct w
 
 	  if (GLYPH_FACE (right_border_glyph) <= 0)
 	    SET_GLYPH_FACE (right_border_glyph, VERTICAL_BORDER_FACE_ID);
+
+	  SET_GLYPH_CHAR (right_bottom_border_glyph, L'╵');
+	  SET_GLYPH_FACE (right_bottom_border_glyph, GLYPH_FACE (right_border_glyph));
 	}
     }
   else
@@ -2606,7 +2618,14 @@ build_frame_matrix_from_leaf_window (struct glyph_matrix *frame_matrix, struct w
 		 glyph with the vertical border glyph.  */
 	      eassert (border->type == CHAR_GLYPH);
 	      border->type = CHAR_GLYPH;
-	      SET_CHAR_GLYPH_FROM_GLYPH (*border, right_border_glyph);
+
+	      if (!WINDOW_BOTTOMMOST_P (w)
+		  && window_y == window_matrix->nrows - 1)
+		SET_CHAR_GLYPH_FROM_GLYPH (*border,
+					   right_bottom_border_glyph);
+	      else
+		SET_CHAR_GLYPH_FROM_GLYPH (*border,
+					   right_border_glyph);
 	    }
 
 #ifdef GLYPH_DEBUG

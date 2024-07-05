@@ -4801,7 +4801,7 @@ values.  */)
 
       if (NILP (horizontal))
 	{
-	  m->top_line = r->top_line + r->total_lines;
+	  m->top_line = r->top_line + r->total_lines + 1;
 	  m->total_lines = XFIXNAT (m->new_total);
 	}
       else
@@ -4832,7 +4832,7 @@ resize_frame_windows (struct frame *f, int size, bool horflag)
 			- window_body_height (m, WINDOW_BODY_IN_PIXELS))
 		     : 0);
 
-  new_pixel_size = max (horflag ? size : size - mini_height, unit);
+  new_pixel_size = max (horflag ? size : size - mini_height - FRAME_LINE_HEIGHT (f), unit);
   new_size = new_pixel_size / unit;
 
   if (new_pixel_size == old_pixel_size
@@ -4903,8 +4903,8 @@ resize_frame_windows (struct frame *f, int size, bool horflag)
 	{
 	  m->total_lines = mini_height / unit;
 	  m->pixel_height = mini_height;
-	  m->top_line = r->top_line + r->total_lines;
-	  m->pixel_top = r->pixel_top + r->pixel_height;
+	  m->top_line = r->top_line + r->total_lines + 1;
+	  m->pixel_top = r->pixel_top + r->pixel_height + FRAME_LINE_HEIGHT (f);
 	}
     }
 
@@ -5295,8 +5295,8 @@ resize_mini_window_apply (struct window *w, int delta)
 
   window_resize_apply (r, false);
 
-  w->pixel_top = r->pixel_top + r->pixel_height;
-  w->top_line = r->top_line + r->total_lines;
+  w->pixel_top = r->pixel_top + r->pixel_height + FRAME_LINE_HEIGHT (f);
+  w->top_line = r->top_line + r->total_lines + 1;
 
   /* Enforce full redisplay of the frame.  */
   /* FIXME: Shouldn't some of the caller do it?  */
@@ -5448,6 +5448,7 @@ window_wants_mode_line (struct window *w)
 
   return (WINDOW_LEAF_P (w)
 	  && !MINI_WINDOW_P (w)
+	  && !WINDOW_BOTTOMMOST_P(w)
 	  && !WINDOW_PSEUDO_P (w)
 	  && !EQ (window_mode_line_format, Qnone)
 	  && (!NILP (window_mode_line_format)
