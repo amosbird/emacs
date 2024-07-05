@@ -1023,7 +1023,7 @@ make_frame (bool mini_p)
   FRAME_LINES (f) = FRAME_TOTAL_LINES (f) = 25;
   FRAME_TEXT_HEIGHT (f) = FRAME_PIXEL_HEIGHT (f) = 25 * FRAME_LINE_HEIGHT (f);
 
-  rw->total_lines = FRAME_LINES (f) - (mini_p ? 1 : 0);
+  rw->total_lines = FRAME_LINES (f) - 1 - (mini_p ? 1 : 0);
   rw->pixel_height = rw->total_lines * FRAME_LINE_HEIGHT (f);
 
   fset_face_hash_table
@@ -1032,8 +1032,8 @@ make_frame (bool mini_p)
 
   if (mini_p)
     {
-      mw->top_line = rw->total_lines;
-      mw->pixel_top = rw->pixel_height;
+      mw->top_line = rw->total_lines + 1;
+      mw->pixel_top = rw->pixel_height + FRAME_LINE_HEIGHT (f);
       mw->total_cols = rw->total_cols;
       mw->pixel_width = rw->pixel_width;
       mw->total_lines = 1;

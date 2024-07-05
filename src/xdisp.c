@@ -20632,14 +20632,16 @@ redisplay_window (Lisp_Object window, bool just_this_one_p)
         }
       else
         {
-          if ((FRAME_TAB_BAR_LINES (f) > 0))
-            display_tab_bar (w);
-        }
+	  /* if (!NILP (BVAR (XBUFFER (WINDOW_BUFFER (w)), */
+	  /*       	   global_mode_line_format))) */
+	    display_tab_bar (w);
+	}
 
       gui_consider_frame_title (w->frame);
 #else
-      if ((FRAME_TAB_BAR_LINES (f) > 0))
-        display_tab_bar (w);
+      /* if (!NILP (BVAR (XBUFFER (WINDOW_BUFFER (w)), */
+      /*   	       global_mode_line_format))) */
+	display_tab_bar (w);
 #endif
     }
 
@@ -37480,7 +37482,7 @@ init_xdisp (void)
       r->pixel_top = r->top_line * FRAME_LINE_HEIGHT (f);
       r->total_cols = FRAME_COLS (f);
       r->pixel_width = r->total_cols * FRAME_COLUMN_WIDTH (f);
-      r->total_lines = FRAME_TOTAL_LINES (f) - 1 - FRAME_TOP_MARGIN (f);
+      r->total_lines = FRAME_TOTAL_LINES (f) - 1 - 1 - FRAME_TOP_MARGIN (f);
       r->pixel_height = r->total_lines * FRAME_LINE_HEIGHT (f);
 
       m->top_line = FRAME_TOTAL_LINES (f) - 1;

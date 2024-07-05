@@ -1652,6 +1652,9 @@ allocate_matrices_for_frame_redisplay (Lisp_Object window, int x, int y,
     {
       w = XWINDOW (window);
 
+      if (MINI_WINDOW_P (w))
+	y += 1;
+
       /* Get the dimension of the window sub-matrix for W, depending
 	 on whether this is a combination or a leaf window.  */
       if (WINDOWP (w->contents))
