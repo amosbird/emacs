@@ -1161,7 +1161,7 @@ static int display_mode_element (struct it *, int, int, int, Lisp_Object,
 static int store_mode_line_string (const char *, Lisp_Object, bool, int, int,
 				   Lisp_Object);
 static const char *decode_mode_spec (struct window *, int, int, Lisp_Object *);
-static void display_global_mode_line (Lisp_Object, Lisp_Object);
+static void display_global_mode_line (struct window *, Lisp_Object);
 static void display_menu_bar (struct window *);
 static void display_tab_bar (struct window *);
 static void update_tab_bar (struct frame *, bool);
@@ -14162,16 +14162,16 @@ display_tab_bar (struct window *w)
 }
 
 static void
-display_global_mode_line (Lisp_Object window, Lisp_Object format)
+display_global_mode_line (struct window *w, Lisp_Object format)
 {
-  struct window *w = XWINDOW (window);
   struct frame *f = XFRAME (WINDOW_FRAME (w));
+  Lisp_Object buf = w->contents;
   struct it it;
   specpdl_ref count = SPECPDL_INDEX ();
 
   if (minibuf_level > 0 && MINI_WINDOW_P (w)
       && WINDOW_LIVE_P (minibuf_selected_window))
-    window = minibuf_selected_window;
+    buf = XWINDOW (minibuf_selected_window)->contents;
 
   // TODO(amos): echo_area_window can be different from minibuf_w
   struct window *minibuf_w = XWINDOW (FRAME_MINIBUF_WINDOW (f));
@@ -14203,7 +14203,8 @@ display_global_mode_line (Lisp_Object window, Lisp_Object format)
 
   {
     Lisp_Object mode_string
-      = Fformat_mode_line (format, Qnil, window, Qnil);
+      = Fformat_mode_line (format, Qnil, FRAME_MINIBUF_WINDOW (f),
+			   buf);
     if (EQ (Vmode_line_compact, Qlong)
 	&& WINDOW_TOTAL_COLS (w) >= SCHARS (mode_string))
       {
@@ -20741,7 +20742,7 @@ redisplay_window (Lisp_Object window, bool just_this_one_p)
 	  Lisp_Object format
 	    = BVAR (&buffer_defaults, global_mode_line_format);
 	   if (!NILP (format))
-	    display_global_mode_line (window, format);
+	    display_global_mode_line (w, format);
 	}
 
       gui_consider_frame_title (w->frame);
