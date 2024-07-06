@@ -5448,6 +5448,7 @@ window_wants_mode_line (struct window *w)
 
   return (WINDOW_LEAF_P (w)
 	  && !MINI_WINDOW_P (w)
+	  && !WINDOW_BOTTOMMOST_P(w)
 	  && !WINDOW_PSEUDO_P (w)
 	  && !EQ (window_mode_line_format, Qnone)
 	  && (!NILP (window_mode_line_format)

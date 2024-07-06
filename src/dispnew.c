@@ -2482,10 +2482,15 @@ build_frame_matrix (struct frame *f)
   /* F must have a frame matrix when this function is called.  */
   eassert (!FRAME_WINDOW_P (f));
 
+  struct window *minibuf_w = XWINDOW (FRAME_MINIBUF_WINDOW (f));
+
   /* Clear all rows in the frame matrix covered by window matrices.
      Menu bar lines are not covered by windows.  */
   for (i = FRAME_TOP_MARGIN (f); i < f->desired_matrix->nrows; ++i)
-    clear_glyph_row (MATRIX_ROW (f->desired_matrix, i));
+    {
+      if (i != minibuf_w->top_line - 1)
+	clear_glyph_row (MATRIX_ROW (f->desired_matrix, i));
+    }
 
   /* Build the matrix by walking the window tree.  */
   build_frame_matrix_from_window_tree (f->desired_matrix,
@@ -2543,7 +2548,7 @@ build_frame_matrix_from_leaf_window (struct glyph_matrix *frame_matrix, struct w
 	  struct Lisp_Char_Table *dp = window_display_table (w);
 	  Lisp_Object gc;
 
-	  SET_GLYPH_FROM_CHAR (right_border_glyph, '|');
+	  SET_GLYPH_CHAR (right_border_glyph, L'│');
 	  if (dp
 	      && (gc = DISP_BORDER_GLYPH (dp), GLYPH_CODE_P (gc)))
 	    {
