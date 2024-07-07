@@ -3238,7 +3238,8 @@ init_iterator (struct it *it, struct window *w,
   if (row == NULL)
     {
       if (base_face_id == MODE_LINE_ACTIVE_FACE_ID
-	  || base_face_id == MODE_LINE_INACTIVE_FACE_ID)
+	  || base_face_id == MODE_LINE_INACTIVE_FACE_ID
+	  || base_face_id == VERTICAL_BORDER_FACE_ID)
 	row = MATRIX_MODE_LINE_ROW (w->desired_matrix);
       else if (base_face_id == TAB_LINE_FACE_ID)
 	row = MATRIX_TAB_LINE_ROW (w->desired_matrix);
@@ -26986,6 +26987,10 @@ display_mode_line (struct window *w, enum face_id face_id, Lisp_Object format)
   struct it it;
   struct face *face;
   specpdl_ref count = SPECPDL_INDEX ();
+
+  if (face_id == MODE_LINE_ACTIVE_FACE_ID
+      || face_id == MODE_LINE_INACTIVE_FACE_ID)
+    face_id = VERTICAL_BORDER_FACE_ID;
 
   init_iterator (&it, w, -1, -1, NULL, face_id);
   /* Don't extend on a previously drawn mode-line.

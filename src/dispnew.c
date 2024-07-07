@@ -2534,6 +2534,7 @@ build_frame_matrix_from_leaf_window (struct glyph_matrix *frame_matrix, struct w
   int window_y, frame_y;
   /* If non-zero, a glyph to insert at the right border of W.  */
   GLYPH right_border_glyph;
+  GLYPH right_bottom_border_glyph;
 
   SET_GLYPH_FROM_CHAR (right_border_glyph, 0);
 
@@ -2558,6 +2559,9 @@ build_frame_matrix_from_leaf_window (struct glyph_matrix *frame_matrix, struct w
 
 	  if (GLYPH_FACE (right_border_glyph) <= 0)
 	    SET_GLYPH_FACE (right_border_glyph, VERTICAL_BORDER_FACE_ID);
+
+	  SET_GLYPH_CHAR (right_bottom_border_glyph, L'╵');
+	  SET_GLYPH_FACE (right_bottom_border_glyph, GLYPH_FACE (right_border_glyph));
 	}
     }
   else
@@ -2614,7 +2618,13 @@ build_frame_matrix_from_leaf_window (struct glyph_matrix *frame_matrix, struct w
 		 glyph with the vertical border glyph.  */
 	      eassert (border->type == CHAR_GLYPH);
 	      border->type = CHAR_GLYPH;
-	      SET_CHAR_GLYPH_FROM_GLYPH (*border, right_border_glyph);
+
+	      if (window_y == window_matrix->nrows - 1)
+		SET_CHAR_GLYPH_FROM_GLYPH (*border,
+					   right_bottom_border_glyph);
+	      else
+		SET_CHAR_GLYPH_FROM_GLYPH (*border,
+					   right_border_glyph);
 	    }
 
 #ifdef GLYPH_DEBUG
