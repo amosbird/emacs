@@ -654,7 +654,7 @@ adjust_frame_size (struct frame *f, int new_text_width, int new_text_height,
   struct window *r = XWINDOW (FRAME_ROOT_WINDOW (f));
   int old_inner_width = WINDOW_PIXEL_WIDTH (r);
   int old_inner_height
-    = (WINDOW_PIXEL_HEIGHT (r)
+    = (WINDOW_PIXEL_HEIGHT (r) + FRAME_LINE_HEIGHT (f)
        + ((FRAME_HAS_MINIBUF_P (f) && !FRAME_MINIBUF_ONLY_P (f))
 	  ? WINDOW_PIXEL_HEIGHT (XWINDOW (FRAME_MINIBUF_WINDOW (f)))
 	  : 0));
