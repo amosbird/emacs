@@ -2619,7 +2619,8 @@ build_frame_matrix_from_leaf_window (struct glyph_matrix *frame_matrix, struct w
 	      eassert (border->type == CHAR_GLYPH);
 	      border->type = CHAR_GLYPH;
 
-	      if (window_y == window_matrix->nrows - 1)
+	      if (!WINDOW_BOTTOMMOST_P (w)
+		  && window_y == window_matrix->nrows - 1)
 		SET_CHAR_GLYPH_FROM_GLYPH (*border,
 					   right_bottom_border_glyph);
 	      else
