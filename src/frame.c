@@ -3222,11 +3222,13 @@ DEFUN ("visible-frame-list", Fvisible_frame_list, Svisible_frame_list,
   (void)
 {
   Lisp_Object tail, frame, value = Qnil;
-  struct frame *f = XFRAME (frame);
 
   FOR_EACH_FRAME (tail, frame)
-    if (FRAME_VISIBLE_P (f) || is_tty_root_frame (f))
-      value = Fcons (frame, value);
+    {
+      struct frame *f = XFRAME (frame);
+      if (FRAME_VISIBLE_P (f) || is_tty_root_frame (f))
+        value = Fcons (frame, value);
+    }
 
   return value;
 }
