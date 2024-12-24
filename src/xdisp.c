@@ -27774,10 +27774,17 @@ display_mode_line (struct window *w, enum face_id face_id, Lisp_Object format)
     {
       it.glyph_row->tab_line_p = true;
       w->desired_matrix->tab_line_p = true;
+
+      int width = max (0, WINDOW_LEFT_MARGIN_WIDTH (w) - 5);
+      display_string (" ", Qnil, Qnil, 0, 0, &it, width, -1, -1, 0);
     }
   else if (face_id == HEADER_LINE_ACTIVE_FACE_ID
 	   || face_id == HEADER_LINE_INACTIVE_FACE_ID)
-    w->desired_matrix->header_line_p = true;
+    {
+      w->desired_matrix->header_line_p = true;
+      int width = max (0, WINDOW_LEFT_MARGIN_WIDTH (w) - 2);
+      display_string (" ", Qnil, Qnil, 0, 0, &it, width, -1, -1, 0);
+    }
 
   /* FIXME: This should be controlled by a user option.  But
      supporting such an option is not trivial, since the mode line is
