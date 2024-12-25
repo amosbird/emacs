@@ -2401,6 +2401,7 @@ delete_frame (Lisp_Object frame, Lisp_Object force)
 
 	  if (!EQ (frame, frame1)
 	      && !FRAME_TOOLTIP_P (f1)
+	      && !is_tty_child_frame (f1)
 	      && FRAME_TERMINAL (f) == FRAME_TERMINAL (f1)
 	      && (FRAME_VISIBLE_P (f1) || is_tty_root_frame (f1)))
 	    break;
@@ -3226,7 +3227,8 @@ DEFUN ("visible-frame-list", Fvisible_frame_list, Svisible_frame_list,
   FOR_EACH_FRAME (tail, frame)
     {
       struct frame *f = XFRAME (frame);
-      if (FRAME_VISIBLE_P (f) || is_tty_root_frame (f))
+      if (!is_tty_child_frame (f) &&
+	  (FRAME_VISIBLE_P (f) || is_tty_root_frame (f)))
         value = Fcons (frame, value);
     }
 
