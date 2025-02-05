@@ -2631,7 +2631,7 @@ delete_frame (Lisp_Object frame, Lisp_Object force)
 	      if (!EQ (frame, frame1)
 		  && !FRAME_TOOLTIP_P (f1)
 		  && FRAME_TERMINAL (f) == FRAME_TERMINAL (f1)
-		  && FRAME_VISIBLE_P (f1))
+		  && (FRAME_VISIBLE_P (f1) || is_tty_root_frame (f1)))
 		break;
 	    }
 
