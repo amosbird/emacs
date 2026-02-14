@@ -33,6 +33,7 @@
   ;; NOTE: If you add entries here, make sure to update
   ;; `terminal-init-xterm' as well.
   '(set (const :tag "modifyOtherKeys support" modifyOtherKeys)
+        (const :tag "kitty keyboard protocol" kittyKeyboard)
         (const :tag "report background" reportBackground)
         (const :tag "get X selection" getSelection)
         (const :tag "set X selection" setSelection)))
@@ -45,6 +46,7 @@ If a list, assume that the listed features are supported, without checking.
 
 The relevant features are:
   modifyOtherKeys  -- if supported, more key bindings work (e.g., \"\\C-,\")
+  kittyKeyboard    -- if supported, use kitty keyboard protocol (CSI u)
   reportBackground -- if supported, Xterm reports its background color
   getSelection     -- if supported, Xterm yanks text from the X selection
   setSelection     -- if supported, Xterm saves killed text to the X selection"
@@ -784,7 +786,7 @@ Return the pasted text as a string."
              (string-to-number (match-string 2 str) 16)
              (string-to-number (match-string 3 str) 16))))))
 
-(defun xterm--version-handler ()
+(defun xterm--version-handler (&optional kitty-supported)
   ;; The reply should be: \e [ > NUMBER1 ; NUMBER2 ; NUMBER3 c
   ;; If the timeout is completely removed for read-event, this
   ;; might hang for terminals that pretend to be xterm, but don't
@@ -828,9 +830,9 @@ Return the pasted text as a string."
                         '(("\e]10;" . xterm--report-foreground-handler))))
 
         ;; If version is 216 (the version when modifyOtherKeys was
-        ;; introduced) or higher, initialize the
-        ;; modifyOtherKeys support.
-        (when (>= version 216)
+        ;; introduced) or higher, initialize keyboard enhancement.
+        ;; Skip if kitty keyboard was already enabled by the probe.
+        (when (and (>= version 216) (not kitty-supported))
           (xterm--init-modify-other-keys))
         ;; In version 203 support for accessing the X selection was
         ;; added.  Hterm reports itself as version 256 and supports it
@@ -955,6 +957,13 @@ We run the first FUNCTION whose STRING matches the input events."
                          (throw 'result str))))))
       nil)))
 
+(defun xterm--kitty-keyboard-query ()
+  "Query if the terminal supports the kitty keyboard protocol.
+Uses the C-level `kitty-keyboard-mode-probe' which sends CSI ?u
+directly to the terminal fd, bypassing the Emacs event system.
+Returns non-nil if supported."
+  (ignore-errors (kitty-keyboard-mode-probe)))
+
 (defun xterm--push-map (map basemap)
   ;; Use inheritance to let the main keymaps override those defaults.
   ;; This way we don't override terminfo-derived settings or settings
@@ -980,13 +989,20 @@ We run the first FUNCTION whose STRING matches the input events."
 
   (if (eq xterm-extra-capabilities 'check)
       (progn
-        ;; Try to find out the type of terminal by sending a "Secondary
-        ;; Device Attributes (DA)" query.
-        (xterm--query "\e[>0c"
-                      '(("\e[>" . xterm--version-handler)))
-        ;; Check primary DA for OSC-52 support
-        (xterm--query "\e[c"
-                      '(("\e[?" . xterm--primary-da-handler))))
+        ;; Probe kitty keyboard protocol support first by sending
+        ;; CSI ?u.  If supported, enable it immediately.
+        (let ((kitty-probed (xterm--kitty-keyboard-query)))
+          (when kitty-probed
+            (xterm--init-kitty-keyboard))
+          ;; Try to find out the type of terminal by sending a "Secondary
+          ;; Device Attributes (DA)" query.
+          (xterm--query "\e[>0c"
+                        `(("\e[>" . ,(lambda ()
+                                       (xterm--version-handler
+                                        kitty-probed)))))
+          ;; Check primary DA for OSC-52 support
+          (xterm--query "\e[c"
+                        '(("\e[?" . xterm--primary-da-handler)))))
 
     (when (memq 'reportBackground xterm-extra-capabilities)
       (xterm--query "\e]11;?\e\\"
@@ -994,7 +1010,11 @@ We run the first FUNCTION whose STRING matches the input events."
       (xterm--query "\e]10;?\e\\"
                     '(("\e]10;" . xterm--report-foreground-handler))))
 
-    (when (memq 'modifyOtherKeys xterm-extra-capabilities)
+    (when (memq 'kittyKeyboard xterm-extra-capabilities)
+      (xterm--init-kitty-keyboard))
+
+    (when (and (memq 'modifyOtherKeys xterm-extra-capabilities)
+               (not (memq 'kittyKeyboard xterm-extra-capabilities)))
       (xterm--init-modify-other-keys))
 
     (when (memq 'getSelection xterm-extra-capabilities)
@@ -1069,6 +1089,18 @@ We run the first FUNCTION whose STRING matches the input events."
   (send-string-to-terminal "\e[>4;1m")
   (push "\e[>4m" (terminal-parameter nil 'tty-mode-reset-strings))
   (push "\e[>4;1m" (terminal-parameter nil 'tty-mode-set-strings)))
+
+(defun xterm--init-kitty-keyboard (&optional flags)
+  "Terminal initialization for the kitty keyboard protocol.
+FLAGS is the enhancement bitmask (default 1 = disambiguate).
+This uses the C-level kitty keyboard mode which parses CSI u
+sequences directly in tty_read_avail_input, so read-event and
+read-char see fully decoded key events."
+  (let ((f (or flags 1)))
+    (kitty-keyboard-mode-enable f)
+    ;; Register reset/set strings for tty suspend/resume.
+    (push "\e[<u" (terminal-parameter nil 'tty-mode-reset-strings))
+    (push (format "\e[>%du" f) (terminal-parameter nil 'tty-mode-set-strings))))
 
 (defun xterm--init-bracketed-paste-mode ()
   "Terminal initialization for bracketed paste mode."

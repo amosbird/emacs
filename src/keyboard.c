@@ -4288,6 +4288,7 @@ kbd_buffer_get_event (KBOARD **kbp,
 #ifdef HAVE_DBUS
       case DBUS_EVENT:
 #endif
+      case BRACKETED_PASTE_EVENT:
 #ifdef THREADS_ENABLED
       case THREAD_EVENT:
 #endif
@@ -7241,6 +7242,11 @@ make_lispy_event (struct input_event *event)
       return Fcons (Qdbus_event, event->arg);
 #endif /* HAVE_DBUS */
 
+    case BRACKETED_PASTE_EVENT:
+      /* Produce (xterm-paste TEXT) — the same event structure that
+         xterm-translate-bracketed-paste generates from Elisp.  */
+      return list2 (Qxterm_paste, event->arg);
+
 #ifdef THREADS_ENABLED
     case THREAD_EVENT:
       return Fcons (Qthread_event, event->arg);
@@ -8133,6 +8139,341 @@ gobble_input (void)
   return nread;
 }
 
+/* Kitty keyboard protocol: decode modifier bitfield.
+   The kitty protocol encodes modifiers as (1 + bitfield), where:
+   bit 0 = shift, bit 1 = alt, bit 2 = ctrl, bit 3 = super,
+   bit 4 = hyper, bit 5 = meta, bit 6 = caps_lock, bit 7 = num_lock.
+   Returns Emacs modifier flags.  */
+
+static unsigned
+kitty_decode_modifiers (int kitty_mods)
+{
+  int bits = kitty_mods - 1;
+  unsigned mods = 0;
+  if (bits & 0x01) mods |= shift_modifier;
+  if (bits & 0x02) mods |= meta_modifier;   /* Alt → Meta */
+  if (bits & 0x04) mods |= ctrl_modifier;
+  if (bits & 0x08) mods |= super_modifier;
+  if (bits & 0x10) mods |= hyper_modifier;
+  if (bits & 0x20) mods |= meta_modifier;   /* Meta key */
+  /* bits & 0x40 = caps_lock, bits & 0x80 = num_lock: ignored.  */
+  return mods;
+}
+
+/* Kitty keyboard protocol: mapping from kitty functional key codes
+   (Private Use Area 57344-63743) to X11 keysyms used by Emacs.
+   Zero means the key is unknown or should be ignored.  */
+
+struct kitty_key_entry
+{
+  int kitty_code;
+  int emacs_keysym;
+};
+
+static const struct kitty_key_entry kitty_functional_keys[] =
+  {
+    /* F13-F35 (kitty PUA 57376-57398).  */
+    { 57376, 0xffc8 },  /* F13 */
+    { 57377, 0xffc9 },  /* F14 */
+    { 57378, 0xffca },  /* F15 */
+    { 57379, 0xffcb },  /* F16 */
+    { 57380, 0xffcc },  /* F17 */
+    { 57381, 0xffcd },  /* F18 */
+    { 57382, 0xffce },  /* F19 */
+    { 57383, 0xffcf },  /* F20 */
+    { 57384, 0xffd0 },  /* F21 */
+    { 57385, 0xffd1 },  /* F22 */
+    { 57386, 0xffd2 },  /* F23 */
+    { 57387, 0xffd3 },  /* F24 */
+    { 57388, 0xffd4 },  /* F25 */
+    { 57389, 0xffd5 },  /* F26 */
+    { 57390, 0xffd6 },  /* F27 */
+    { 57391, 0xffd7 },  /* F28 */
+    { 57392, 0xffd8 },  /* F29 */
+    { 57393, 0xffd9 },  /* F30 */
+    { 57394, 0xffda },  /* F31 */
+    { 57395, 0xffdb },  /* F32 */
+    { 57396, 0xffdc },  /* F33 */
+    { 57397, 0xffdd },  /* F34 */
+    { 57398, 0xffde },  /* F35 */
+
+    /* Keypad keys (kitty PUA 57399-57427).  */
+    { 57399, 0xffb0 },  /* KP_0 */
+    { 57400, 0xffb1 },  /* KP_1 */
+    { 57401, 0xffb2 },  /* KP_2 */
+    { 57402, 0xffb3 },  /* KP_3 */
+    { 57403, 0xffb4 },  /* KP_4 */
+    { 57404, 0xffb5 },  /* KP_5 */
+    { 57405, 0xffb6 },  /* KP_6 */
+    { 57406, 0xffb7 },  /* KP_7 */
+    { 57407, 0xffb8 },  /* KP_8 */
+    { 57408, 0xffb9 },  /* KP_9 */
+    { 57409, 0xffae },  /* KP_DECIMAL */
+    { 57410, 0xffaf },  /* KP_DIVIDE */
+    { 57411, 0xffaa },  /* KP_MULTIPLY */
+    { 57412, 0xffad },  /* KP_SUBTRACT */
+    { 57413, 0xffab },  /* KP_ADD */
+    { 57414, 0xff8d },  /* KP_ENTER */
+    { 57415, 0xffbd },  /* KP_EQUAL */
+    { 57416, 0xffac },  /* KP_SEPARATOR */
+    { 57417, 0xff96 },  /* KP_LEFT */
+    { 57418, 0xff98 },  /* KP_RIGHT */
+    { 57419, 0xff97 },  /* KP_UP */
+    { 57420, 0xff99 },  /* KP_DOWN */
+    { 57421, 0xff9a },  /* KP_PAGE_UP */
+    { 57422, 0xff9b },  /* KP_PAGE_DOWN */
+    { 57423, 0xff95 },  /* KP_HOME */
+    { 57424, 0xff9c },  /* KP_END */
+    { 57425, 0xff9e },  /* KP_INSERT */
+    { 57426, 0xff9f },  /* KP_DELETE */
+    { 57427, 0xff9d },  /* KP_BEGIN */
+
+    /* Special keys in PUA.  */
+    { 57358, 0xffe5 },  /* CAPS_LOCK */
+    { 57359, 0xff14 },  /* SCROLL_LOCK */
+    { 57360, 0xff7f },  /* NUM_LOCK */
+    { 57361, 0xff61 },  /* PRINT_SCREEN */
+    { 57362, 0xff13 },  /* PAUSE */
+    { 57363, 0xff67 },  /* MENU */
+  };
+
+/* Look up a kitty functional key code.  Returns the X11 keysym,
+   or 0 if not found.  */
+
+static int
+kitty_lookup_functional_key (int code)
+{
+  for (size_t i = 0; i < ARRAYELTS (kitty_functional_keys); i++)
+    if (kitty_functional_keys[i].kitty_code == code)
+      return kitty_functional_keys[i].emacs_keysym;
+  return 0;
+}
+
+/* Map a kitty CSI-tilde number to an X11 keysym.  These are the keys
+   encoded as CSI number ; modifiers ~.  */
+
+static int
+kitty_tilde_to_keysym (int number)
+{
+  switch (number)
+    {
+    case 2:  return 0xff63;  /* Insert */
+    case 3:  return 0xffff;  /* Delete */
+    case 5:  return 0xff55;  /* Page_Up */
+    case 6:  return 0xff56;  /* Page_Down */
+    case 7:  return 0xff50;  /* Home */
+    case 8:  return 0xff57;  /* End */
+    case 11: return 0xffbe;  /* F1 */
+    case 12: return 0xffbf;  /* F2 */
+    case 13: return 0xffc0;  /* F3 */
+    case 14: return 0xffc1;  /* F4 */
+    case 15: return 0xffc2;  /* F5 */
+    case 17: return 0xffc3;  /* F6 */
+    case 18: return 0xffc4;  /* F7 */
+    case 19: return 0xffc5;  /* F8 */
+    case 20: return 0xffc6;  /* F9 */
+    case 21: return 0xffc7;  /* F10 */
+    case 23: return 0xffc8;  /* F11 */
+    case 24: return 0xffc9;  /* F12 */
+    case 29: return 0xff67;  /* Menu */
+    default: return 0;
+    }
+}
+
+/* Map a kitty CSI-letter terminator to an X11 keysym.  These are keys
+   encoded as CSI 1 ; modifiers LETTER.  */
+
+static int
+kitty_letter_to_keysym (int letter)
+{
+  switch (letter)
+    {
+    case 'A': return 0xff52;  /* Up */
+    case 'B': return 0xff54;  /* Down */
+    case 'C': return 0xff53;  /* Right */
+    case 'D': return 0xff51;  /* Left */
+    case 'E': return 0xff9d;  /* KP_Begin */
+    case 'F': return 0xff57;  /* End */
+    case 'H': return 0xff50;  /* Home */
+    case 'P': return 0xffbe;  /* F1 */
+    case 'Q': return 0xffbf;  /* F2 */
+    case 'R': return 0xffc0;  /* F3 */
+    case 'S': return 0xffc1;  /* F4 */
+    default:  return 0;
+    }
+}
+
+/* Collect bracketed paste content from TTY input.
+   Called when we have just parsed \e[200~ (paste start marker).
+   CBUF + START is the first byte after the marker, NREAD is total
+   bytes in cbuf.  FD is the terminal file descriptor for reading
+   more data if needed.
+
+   Reads bytes until \e[201~ (paste end marker) is found.
+   Returns a Lisp string with the pasted text (\r converted to \n),
+   or Qnil if the paste cannot be collected.
+
+   *CONSUMED is set to the total number of bytes consumed from cbuf
+   starting at START (including the end marker if found within cbuf).  */
+
+static Lisp_Object
+tty_collect_bracketed_paste (unsigned char *cbuf, int start, int nread,
+			     int fd, int *consumed)
+{
+  /* Dynamic buffer for paste content.  We also use the end of this
+     buffer as a sliding window for end-marker detection.  */
+  int capacity = 4096;
+  int len = 0;
+  char *paste_buf = xmalloc (capacity);
+
+  /* End marker: \e[201~  (6 bytes).  */
+  static const unsigned char end_marker[] = { 0x1b, '[', '2', '0', '1', '~' };
+
+  /* We scan all available data sources in order:
+     1. cbuf[start..nread-1]  (the remainder of the current read buffer)
+     2. Subsequent reads from fd  */
+  unsigned char *src = cbuf + start;
+  int src_len = nread - start;
+  bool found_end = false;
+
+  /* Track total elapsed time to avoid hanging forever if the end
+     marker never arrives (e.g. terminal glitch, orphaned \e[200~).  */
+  struct timespec deadline = timespec_add (current_timespec (),
+					   make_timespec (3, 0));
+
+  for (;;)
+    {
+      /* Scan src[0..src_len-1] for the end marker.  */
+      for (int p = 0; p < src_len; p++)
+	{
+	  if (src[p] == end_marker[0]
+	      && p + 6 <= src_len
+	      && memcmp (src + p, end_marker, 6) == 0)
+	    {
+	      /* Found end marker at src[p].  Add everything before it
+		 to the paste buffer.  */
+	      for (int k = 0; k < p; k++)
+		{
+		  if (len >= capacity - 1)
+		    {
+		      capacity *= 2;
+		      paste_buf = xrealloc (paste_buf, capacity);
+		    }
+		  paste_buf[len++] = (src[k] == '\r') ? '\n' : src[k];
+		}
+	      /* Record how much of cbuf we consumed.  */
+	      if (src >= cbuf && src < cbuf + nread)
+		*consumed = (src + p + 6) - (cbuf + start);
+	      found_end = true;
+	      break;
+	    }
+	}
+
+      if (found_end)
+	break;
+
+      /* No end marker found in this chunk.  Add all data to
+	 paste buffer, but hold back the last 5 bytes (in case the
+	 end marker spans two reads).  */
+      int safe = src_len > 5 ? src_len - 5 : 0;
+      for (int k = 0; k < safe; k++)
+	{
+	  if (len >= capacity - 1)
+	    {
+	      capacity *= 2;
+	      paste_buf = xrealloc (paste_buf, capacity);
+	    }
+	  paste_buf[len++] = (src[k] == '\r') ? '\n' : src[k];
+	}
+
+      /* If this was the cbuf portion, record that we consumed all of it.  */
+      if (src >= cbuf && src < cbuf + nread)
+	*consumed = nread - start;
+
+      /* Move held-back bytes to a small buffer and read more.  */
+      unsigned char holdback[5];
+      int nheld = src_len - safe;
+      if (nheld > 0)
+	memcpy (holdback, src + safe, nheld);
+
+      /* Check total deadline to avoid hanging indefinitely.  */
+      struct timespec now = current_timespec ();
+      if (timespec_cmp (now, deadline) >= 0)
+	{
+	  for (int k = 0; k < nheld; k++)
+	    {
+	      if (len >= capacity - 1)
+		{
+		  capacity *= 2;
+		  paste_buf = xrealloc (paste_buf, capacity);
+		}
+	      paste_buf[len++] = (holdback[k] == '\r')
+				   ? '\n' : holdback[k];
+	    }
+	  break;
+	}
+
+      /* Compute remaining time for pselect.  */
+      struct timespec remaining = timespec_sub (deadline, now);
+      /* Cap per-read wait at 1 second.  */
+      struct timespec timeout = make_timespec (0, 500000000); /* 0.5s */
+      if (timespec_cmp (remaining, timeout) < 0)
+	timeout = remaining;
+
+      fd_set rfds;
+      FD_ZERO (&rfds);
+      FD_SET (fd, &rfds);
+      int sel = pselect (fd + 1, &rfds, NULL, NULL, &timeout, NULL);
+      if (sel <= 0)
+	{
+	  /* Timeout or error.  Add held-back bytes and give up.  */
+	  for (int k = 0; k < nheld; k++)
+	    {
+	      if (len >= capacity - 1)
+		{
+		  capacity *= 2;
+		  paste_buf = xrealloc (paste_buf, capacity);
+		}
+	      paste_buf[len++] = (holdback[k] == '\r')
+				   ? '\n' : holdback[k];
+	    }
+	  break;
+	}
+
+      /* Read more data.  Prepend held-back bytes.  */
+      unsigned char readbuf[4096 + 5];
+      if (nheld > 0)
+	memcpy (readbuf, holdback, nheld);
+      int nr = emacs_read (fd, (char *) readbuf + nheld,
+			   sizeof readbuf - nheld);
+      if (nr <= 0)
+	{
+	  /* Add held-back bytes and give up.  */
+	  for (int k = 0; k < nheld; k++)
+	    {
+	      if (len >= capacity - 1)
+		{
+		  capacity *= 2;
+		  paste_buf = xrealloc (paste_buf, capacity);
+		}
+	      paste_buf[len++] = (holdback[k] == '\r')
+				   ? '\n' : holdback[k];
+	    }
+	  break;
+	}
+
+      src = readbuf;
+      src_len = nheld + nr;
+    }
+
+  /* Build the Lisp string.  Modern terminals send paste content
+     as UTF-8.  */
+  Lisp_Object result = make_string_from_utf8 (paste_buf, len);
+  xfree (paste_buf);
+
+  return result;
+}
+
 /* This is the tty way of reading available input.
 
    Note that each terminal device has its own `struct terminal' object,
@@ -8271,10 +8612,319 @@ tty_read_avail_input (struct terminal *terminal,
 #endif /* not MSDOS */
 #endif /* not WINDOWSNT */
 
+  /* If kitty keyboard protocol is active, prepend any pending bytes
+     from a previous incomplete escape sequence.  */
+  if (tty->kitty_keyboard_mode > 0 && tty->kitty_pending_count > 0)
+    {
+      int pending = tty->kitty_pending_count;
+      if (pending + nread > (int) sizeof cbuf)
+	pending = (int) sizeof cbuf - nread;
+      memmove (cbuf + pending, cbuf, nread);
+      memcpy (cbuf, tty->kitty_pending, pending);
+      nread += pending;
+      tty->kitty_pending_count = 0;
+    }
+
   for (i = 0; i < nread; i++)
     {
       struct input_event buf;
       EVENT_INIT (buf);
+      buf.arg = Qnil;
+
+      /* Set the frame for this event.  */
+      if (!FRAMEP (tty->top_frame)
+	  || (FRAME_PARENT_FRAME (XFRAME (selected_frame))
+	      && (root_frame (XFRAME (selected_frame))
+		  == XFRAME (tty->top_frame))))
+	buf.frame_or_window = selected_frame;
+      else
+	buf.frame_or_window = tty->top_frame;
+      eassert (FRAMEP (buf.frame_or_window));
+
+      /* Kitty keyboard protocol: parse CSI sequences.  */
+      if (tty->kitty_keyboard_mode > 0
+	  && cbuf[i] == 0x1b && i + 1 < nread && cbuf[i + 1] == '[')
+	{
+	  /* We have ESC [.  Try to parse the full CSI sequence.
+	     Format: ESC [ params terminator
+	     where params are decimal numbers separated by ; and :
+	     and terminator is 'u', '~', or a letter A-S.  */
+	  int seq_start = i;
+	  int j = i + 2;  /* skip ESC [ */
+	  int params[8] = {0};  /* up to 8 parameters */
+	  int sub_params[8] = {0}; /* sub-parameters after ':' */
+	  int param_count = 0;
+	  bool have_sub = false;
+	  bool parsing_sub = false;
+	  int terminator = 0;
+
+	  /* Parse parameters.  */
+	  while (j < nread)
+	    {
+	      unsigned char c = cbuf[j];
+	      if (c >= '0' && c <= '9')
+		{
+		  if (param_count == 0)
+		    param_count = 1;
+		  int *p = parsing_sub ? &sub_params[param_count - 1]
+				       : &params[param_count - 1];
+		  if (*p > INT_MAX / 10)
+		    goto emit_raw_csi_sequence;  /* Overflow, bail out.  */
+		  *p = *p * 10 + (c - '0');
+		  j++;
+		}
+	      else if (c == ';')
+		{
+		  if (param_count < 8)
+		    param_count++;
+		  parsing_sub = false;
+		  j++;
+		}
+	      else if (c == ':')
+		{
+		  have_sub = true;
+		  parsing_sub = true;
+		  j++;
+		}
+	      else if (c == 'u' || c == '~'
+		       || (c >= 'A' && c <= 'S'))
+		{
+		  terminator = c;
+		  j++;
+		  break;
+		}
+	      else
+		{
+		  /* Unknown character in sequence - not a kitty sequence.
+		     Pass through the ESC byte as-is.  */
+		  break;
+		}
+	    }
+
+	  if (terminator == 0)
+	    {
+	      if (j >= nread)
+		{
+		  /* Incomplete sequence at end of buffer.
+		     Save it for next read.  */
+		  int remaining = nread - seq_start;
+		  if (remaining <= (int) sizeof tty->kitty_pending)
+		    {
+		      memcpy (tty->kitty_pending, cbuf + seq_start,
+			      remaining);
+		      tty->kitty_pending_count = remaining;
+		    }
+		  /* Don't process these bytes further.  */
+		  break;
+		}
+	      /* Not a valid kitty sequence.  Emit bytes as a contiguous
+		 batch so input-decode-map can reassemble them.  */
+	      goto emit_raw_csi_sequence;
+	    }
+
+	  /* Successfully parsed a CSI sequence.  Advance i past it.  */
+	  i = j - 1;  /* -1 because the for loop will i++ */
+
+	  int key_code = params[0];
+	  int kitty_mods = (param_count >= 2) ? params[1] : 1;
+	  int event_type = (have_sub && param_count >= 2)
+			    ? sub_params[1] : 1;
+
+	  /* Event type: 1=press, 2=repeat, 3=release.
+	     For now, discard release events.  */
+	  if (event_type == 3)
+	    continue;
+
+	  unsigned emacs_mods = kitty_decode_modifiers (kitty_mods);
+
+	  if (terminator == 'u')
+	    {
+	      /* CSI code ; modifiers u */
+	      int keysym;
+
+	      /* Check for special keys first.  */
+	      if (key_code == 27)
+		{
+		  /* ESCAPE */
+		  buf.kind = NON_ASCII_KEYSTROKE_EVENT;
+		  buf.code = 0xff1b;  /* XK_Escape */
+		  buf.modifiers = emacs_mods;
+		}
+	      else if (key_code == 13)
+		{
+		  /* ENTER / Return */
+		  buf.kind = NON_ASCII_KEYSTROKE_EVENT;
+		  buf.code = 0xff0d;  /* XK_Return */
+		  buf.modifiers = emacs_mods;
+		}
+	      else if (key_code == 9)
+		{
+		  /* TAB */
+		  buf.kind = NON_ASCII_KEYSTROKE_EVENT;
+		  buf.code = 0xff09;  /* XK_Tab */
+		  buf.modifiers = emacs_mods;
+		}
+	      else if (key_code == 127)
+		{
+		  /* BACKSPACE */
+		  buf.kind = NON_ASCII_KEYSTROKE_EVENT;
+		  buf.code = 0xff08;  /* XK_BackSpace */
+		  buf.modifiers = emacs_mods;
+		}
+	      else if ((keysym = kitty_lookup_functional_key (key_code)) != 0)
+		{
+		  /* PUA functional key.  */
+		  buf.kind = NON_ASCII_KEYSTROKE_EVENT;
+		  buf.code = keysym;
+		  buf.modifiers = emacs_mods;
+		}
+	      else if (key_code >= 32 && key_code < 127)
+		{
+		  /* Printable ASCII character.  */
+		  buf.kind = ASCII_KEYSTROKE_EVENT;
+		  buf.code = key_code;
+		  buf.modifiers = emacs_mods;
+		}
+	      else if (key_code >= 128)
+		{
+		  /* Unicode character.  */
+		  buf.kind = MULTIBYTE_CHAR_KEYSTROKE_EVENT;
+		  buf.code = key_code;
+		  buf.modifiers = emacs_mods;
+		}
+	      else
+		{
+		  /* Other control character (0-31 except 9, 13, 27).  */
+		  buf.kind = ASCII_KEYSTROKE_EVENT;
+		  buf.code = key_code;
+		  buf.modifiers = emacs_mods;
+		}
+	    }
+	  else if (terminator == '~')
+	    {
+	      /* CSI number ; modifiers ~ */
+
+	      /* Bracketed paste start (\e[200~): collect all paste
+		 content until \e[201~ and emit a single
+		 BRACKETED_PASTE_EVENT.  */
+	      if (key_code == 200)
+		{
+		  int consumed = 0;
+		  Lisp_Object text
+		    = tty_collect_bracketed_paste (cbuf, j, nread,
+						   fileno (tty->input),
+						   &consumed);
+		  if (!NILP (text))
+		    {
+		      buf.kind = BRACKETED_PASTE_EVENT;
+		      buf.code = 0;
+		      buf.modifiers = 0;
+		      buf.arg = text;
+		      kbd_buffer_store_event (&buf);
+		      i = j + consumed - 1;  /* -1 for for-loop i++ */
+		      continue;
+		    }
+		  /* If collection failed, fall through to emit bytes
+		     as a contiguous batch.  */
+		  goto emit_raw_csi_sequence;
+		}
+	      /* Ignore paste end marker if we see it standalone.  */
+	      if (key_code == 201)
+		{
+		  i = j - 1;
+		  continue;
+		}
+
+	      int keysym = kitty_tilde_to_keysym (key_code);
+	      if (keysym == 0)
+		{
+		  /* Also check PUA keys sent with ~ terminator.  */
+		  keysym = kitty_lookup_functional_key (key_code);
+		}
+	      if (keysym != 0)
+		{
+		  buf.kind = NON_ASCII_KEYSTROKE_EVENT;
+		  buf.code = keysym;
+		  buf.modifiers = emacs_mods;
+		}
+	      else
+		{
+		  /* Unknown tilde sequence.  Emit bytes as contiguous
+		     batch so input-decode-map can handle them.  */
+		  goto emit_raw_csi_sequence;
+		}
+	    }
+	  else
+	    {
+	      /* CSI ... LETTER sequences.  */
+
+	      /* Focus tracking: \e[I = focus in, \e[O = focus out.
+		 These have no parameters.  Generate FOCUS_IN/OUT events
+		 directly rather than relying on input-decode-map (which
+		 fails when evil-mode intercepts the ESC byte).  */
+	      if (terminator == 'I' && param_count == 0)
+		{
+		  buf.kind = FOCUS_IN_EVENT;
+		  buf.code = 0;
+		  buf.modifiers = 0;
+		  buf.arg = Qnil;
+		  kbd_buffer_store_event (&buf);
+		  continue;
+		}
+	      if (terminator == 'O' && param_count == 0)
+		{
+		  buf.kind = FOCUS_OUT_EVENT;
+		  buf.code = 0;
+		  buf.modifiers = 0;
+		  buf.arg = Qnil;
+		  kbd_buffer_store_event (&buf);
+		  continue;
+		}
+
+	      /* CSI 1 ; modifiers LETTER — arrow/function keys.  */
+	      int keysym = kitty_letter_to_keysym (terminator);
+	      if (keysym != 0)
+		{
+		  buf.kind = NON_ASCII_KEYSTROKE_EVENT;
+		  buf.code = keysym;
+		  buf.modifiers = emacs_mods;
+		}
+	      else
+		goto emit_raw_csi_sequence;
+	    }
+
+	  kbd_buffer_store_event (&buf);
+	  /* Check for quit_char (C-g).  */
+	  if (buf.kind == ASCII_KEYSTROKE_EVENT
+	      && buf.code == quit_char)
+	    break;
+	  continue;
+
+	emit_raw_csi_sequence:
+	  /* Unrecognized CSI sequence: emit all bytes from seq_start
+	     to j (exclusive) as a contiguous batch of ASCII events.
+	     This ensures input-decode-map sees them together and can
+	     match multi-byte terminal sequences like \e[M (mouse),
+	     \e[< (SGR mouse), etc., even when evil-mode would
+	     otherwise intercept the leading ESC byte.  */
+	  {
+	    for (int k = seq_start; k < j; k++)
+	      {
+		struct input_event raw_evt;
+		EVENT_INIT (raw_evt);
+		raw_evt.kind = ASCII_KEYSTROKE_EVENT;
+		raw_evt.code = cbuf[k];
+		raw_evt.modifiers = 0;
+		raw_evt.frame_or_window = buf.frame_or_window;
+		raw_evt.arg = Qnil;
+		kbd_buffer_store_event (&raw_evt);
+	      }
+	    i = j - 1;  /* -1 for the for-loop i++ */
+	  }
+	  continue;
+	}
+
+      /* Legacy byte-by-byte processing.  */
       buf.kind = ASCII_KEYSTROKE_EVENT;
       buf.modifiers = 0;
       if (tty->meta_key == 1 && (cbuf[i] & 0x80))
@@ -8283,26 +8933,6 @@ tty_read_avail_input (struct terminal *terminal,
         cbuf[i] &= ~0x80;
 
       buf.code = cbuf[i];
-      /* Set the frame corresponding to the active tty.  Note that the
-         value of selected_frame is not reliable here, redisplay tends
-         to temporarily change it.  However, if the selected frame is a
-         child frame, don't do that since it will cause switch frame
-         events to switch to the root frame instead.  If the tty's top
-         frame has not been set up yet, always use the selected frame
-         (Bug#78966).  */
-      if (!FRAMEP (tty->top_frame)
-	  || (FRAME_PARENT_FRAME (XFRAME (selected_frame))
-	      && (root_frame (XFRAME (selected_frame))
-		  == XFRAME (tty->top_frame))))
-	buf.frame_or_window = selected_frame;
-      else
-	buf.frame_or_window = tty->top_frame;
-
-      /* If neither the selected frame nor the top frame were set,
-	 something must have gone really wrong.  */
-      eassert (FRAMEP (buf.frame_or_window));
-
-      buf.arg = Qnil;
 
       kbd_buffer_store_event (&buf);
       /* Don't look at input that follows a C-g too closely.
@@ -12113,6 +12743,7 @@ Only 'input_event' slots KIND and ARG are set.  */)
      : EQ (XCAR (event), Qfocus_out) ? FOCUS_OUT_EVENT
      : EQ (XCAR (event), Qmove_frame) ? MOVE_FRAME_EVENT
      : EQ (XCAR (event), Qsleep_event) ? SLEEP_EVENT
+     : EQ (XCAR (event), Qxterm_paste) ? BRACKETED_PASTE_EVENT
      : NO_EVENT);
   ie.frame_or_window = Qnil;
   ie.arg = CDR (event);
@@ -13347,6 +13978,9 @@ is_ignored_event (union buffered_input_event *event)
       ignore_event = Qdbus_event;
       break;
 #endif
+    case BRACKETED_PASTE_EVENT:
+      ignore_event = Qxterm_paste;
+      break;
     case SLEEP_EVENT:
       ignore_event = Qsleep_event;
       break;
@@ -13447,6 +14081,8 @@ syms_of_keyboard (void)
 #ifdef HAVE_DBUS
   DEFSYM (Qdbus_event, "dbus-event");
 #endif
+
+  DEFSYM (Qxterm_paste, "xterm-paste");
 
 #ifdef THREADS_ENABLED
   DEFSYM (Qthread_event, "thread-event");
