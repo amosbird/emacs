@@ -8318,7 +8318,8 @@ kitty_letter_to_keysym (int letter)
 
 static Lisp_Object
 tty_collect_bracketed_paste (unsigned char *cbuf, int start, int nread,
-			     int fd, int *consumed)
+			     int fd, int *consumed,
+			     struct tty_display_info *tty)
 {
   /* Dynamic buffer for paste content.  We also use the end of this
      buffer as a sliding window for end-marker detection.  */
@@ -8336,10 +8337,18 @@ tty_collect_bracketed_paste (unsigned char *cbuf, int start, int nread,
   int src_len = nread - start;
   bool found_end = false;
 
-  /* Track total elapsed time to avoid hanging forever if the end
-     marker never arrives (e.g. terminal glitch, orphaned \e[200~).  */
-  struct timespec deadline = timespec_add (current_timespec (),
-					   make_timespec (3, 0));
+  /* Use an idle timeout: keep reading as long as data keeps arriving.
+     Give up only after IDLE_TIMEOUT_NS nanoseconds of silence.  This
+     prevents truncating large pastes that transfer through a slow PTY
+     or SSH connection, which would leave unread paste data in the input
+     buffer and cause a PTY deadlock when Emacs writes output during
+     redisplay.
+
+     A hard deadline prevents hanging forever if something goes truly
+     wrong (e.g. terminal crashes mid-paste).  */
+  const long idle_timeout_ns = 2000000000L;  /* 2 seconds idle */
+  struct timespec hard_deadline
+    = timespec_add (current_timespec (), make_timespec (60, 0));
 
   for (;;)
     {
@@ -8364,6 +8373,20 @@ tty_collect_bracketed_paste (unsigned char *cbuf, int start, int nread,
 	      /* Record how much of cbuf we consumed.  */
 	      if (src >= cbuf && src < cbuf + nread)
 		*consumed = (src + p + 6) - (cbuf + start);
+	      else
+		{
+		  /* End marker found in a secondary read buffer.  Save
+		     any bytes after the marker to kitty_pending so they
+		     are not lost.  */
+		  int after = src_len - (p + 6);
+		  if (after > 0 && tty)
+		    {
+		      int save = after < (int) sizeof tty->kitty_pending
+			? after : (int) sizeof tty->kitty_pending;
+		      memcpy (tty->kitty_pending, src + p + 6, save);
+		      tty->kitty_pending_count = save;
+		    }
+		}
 	      found_end = true;
 	      break;
 	    }
@@ -8396,9 +8419,9 @@ tty_collect_bracketed_paste (unsigned char *cbuf, int start, int nread,
       if (nheld > 0)
 	memcpy (holdback, src + safe, nheld);
 
-      /* Check total deadline to avoid hanging indefinitely.  */
+      /* Check hard deadline to avoid hanging indefinitely.  */
       struct timespec now = current_timespec ();
-      if (timespec_cmp (now, deadline) >= 0)
+      if (timespec_cmp (now, hard_deadline) >= 0)
 	{
 	  for (int k = 0; k < nheld; k++)
 	    {
@@ -8413,10 +8436,12 @@ tty_collect_bracketed_paste (unsigned char *cbuf, int start, int nread,
 	  break;
 	}
 
-      /* Compute remaining time for pselect.  */
-      struct timespec remaining = timespec_sub (deadline, now);
-      /* Cap per-read wait at 1 second.  */
-      struct timespec timeout = make_timespec (0, 500000000); /* 0.5s */
+      /* Use the idle timeout for pselect: if no data arrives within
+	 this period, assume the paste is done (end marker lost).  */
+      struct timespec timeout = make_timespec (idle_timeout_ns / 1000000000L,
+					       idle_timeout_ns % 1000000000L);
+      /* But don't exceed the hard deadline.  */
+      struct timespec remaining = timespec_sub (hard_deadline, now);
       if (timespec_cmp (remaining, timeout) < 0)
 	timeout = remaining;
 
@@ -8813,7 +8838,7 @@ tty_read_avail_input (struct terminal *terminal,
 		  Lisp_Object text
 		    = tty_collect_bracketed_paste (cbuf, j, nread,
 						   fileno (tty->input),
-						   &consumed);
+						   &consumed, tty);
 		  if (!NILP (text))
 		    {
 		      buf.kind = BRACKETED_PASTE_EVENT;
