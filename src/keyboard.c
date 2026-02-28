@@ -8396,9 +8396,10 @@ tty_collect_bracketed_paste (unsigned char *cbuf, int start, int nread,
 	break;
 
       /* No end marker found in this chunk.  Add all data to
-	 paste buffer, but hold back the last 5 bytes (in case the
-	 end marker spans two reads).  */
-      int safe = src_len > 5 ? src_len - 5 : 0;
+	 paste buffer, but hold back enough bytes for the end marker
+	 (in case it spans two reads).  */
+      int safe = src_len > (int) sizeof end_marker
+		 ? src_len - (int) sizeof end_marker : 0;
       for (int k = 0; k < safe; k++)
 	{
 	  if (len >= capacity - 1)
@@ -8414,7 +8415,7 @@ tty_collect_bracketed_paste (unsigned char *cbuf, int start, int nread,
 	*consumed = nread - start;
 
       /* Move held-back bytes to a small buffer and read more.  */
-      unsigned char holdback[5];
+      unsigned char holdback[sizeof end_marker];
       int nheld = src_len - safe;
       if (nheld > 0)
 	memcpy (holdback, src + safe, nheld);
@@ -8448,7 +8449,23 @@ tty_collect_bracketed_paste (unsigned char *cbuf, int start, int nread,
       fd_set rfds;
       FD_ZERO (&rfds);
       FD_SET (fd, &rfds);
-      int sel = pselect (fd + 1, &rfds, NULL, NULL, &timeout, NULL);
+
+      /* Block SIGIO during pselect so the input-available signal
+	 doesn't interrupt us with EINTR.  We are already reading
+	 input; an interruption here would abort paste collection
+	 and leave raw bytes in the PTY that get misinterpreted as
+	 individual keystrokes.  */
+      sigset_t mask;
+      sigprocmask (SIG_BLOCK, NULL, &mask);
+#ifdef USABLE_SIGIO
+      sigaddset (&mask, SIGIO);
+#endif
+#ifdef USABLE_SIGPOLL
+      sigaddset (&mask, SIGPOLL);
+#endif
+      int sel = pselect (fd + 1, &rfds, NULL, NULL, &timeout, &mask);
+      if (sel < 0 && errno == EINTR)
+	continue;  /* Signal interrupted us, retry.  */
       if (sel <= 0)
 	{
 	  /* Timeout or error.  Add held-back bytes and give up.  */
@@ -8466,7 +8483,7 @@ tty_collect_bracketed_paste (unsigned char *cbuf, int start, int nread,
 	}
 
       /* Read more data.  Prepend held-back bytes.  */
-      unsigned char readbuf[4096 + 5];
+      unsigned char readbuf[4096 + sizeof end_marker];
       if (nheld > 0)
 	memcpy (readbuf, holdback, nheld);
       int nr = emacs_read (fd, (char *) readbuf + nheld,
@@ -8667,6 +8684,21 @@ tty_read_avail_input (struct terminal *terminal,
       eassert (FRAMEP (buf.frame_or_window));
 
       /* Kitty keyboard protocol: parse CSI sequences.  */
+      if (tty->kitty_keyboard_mode > 0 && cbuf[i] == 0x1b)
+	{
+	  if (i + 1 >= nread)
+	    {
+	      /* Lone ESC at end of buffer.  Save it for next read
+		 so we don't break multi-byte sequences like
+		 bracketed paste \e[200~.  */
+	      tty->kitty_pending[0] = 0x1b;
+	      tty->kitty_pending_count = 1;
+	      break;
+	    }
+	  if (cbuf[i + 1] != '[')
+	    goto not_kitty_csi;
+	}
+
       if (tty->kitty_keyboard_mode > 0
 	  && cbuf[i] == 0x1b && i + 1 < nread && cbuf[i + 1] == '[')
 	{
@@ -8950,6 +8982,7 @@ tty_read_avail_input (struct terminal *terminal,
 	}
 
       /* Legacy byte-by-byte processing.  */
+    not_kitty_csi:
       buf.kind = ASCII_KEYSTROKE_EVENT;
       buf.modifiers = 0;
       if (tty->meta_key == 1 && (cbuf[i] & 0x80))
