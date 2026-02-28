@@ -1100,7 +1100,14 @@ read-char see fully decoded key events."
     (kitty-keyboard-mode-enable f)
     ;; Register reset/set strings for tty suspend/resume.
     (push "\e[<u" (terminal-parameter nil 'tty-mode-reset-strings))
-    (push (format "\e[>%du" f) (terminal-parameter nil 'tty-mode-set-strings))))
+    (push (format "\e[>%du" f) (terminal-parameter nil 'tty-mode-set-strings))
+    ;; Restore C-level kitty_keyboard_mode on resume, since
+    ;; tty-mode-set-strings only sends the escape sequence to the
+    ;; terminal but doesn't update the C struct.
+    (add-hook 'resume-tty-functions
+              (lambda (terminal)
+                (when (eq terminal (frame-terminal))
+                  (kitty-keyboard-mode-enable f))))))
 
 (defun xterm--init-bracketed-paste-mode ()
   "Terminal initialization for bracketed paste mode."
