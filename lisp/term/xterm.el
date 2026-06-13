@@ -1090,6 +1090,12 @@ Returns non-nil if supported."
   (push "\e[>4m" (terminal-parameter nil 'tty-mode-reset-strings))
   (push "\e[>4;1m" (terminal-parameter nil 'tty-mode-set-strings)))
 
+(defun xterm--kitty-keyboard-resume (terminal)
+  "Resume kitty keyboard mode on TERMINAL after suspend."
+  (let ((flags (terminal-parameter terminal 'kitty-keyboard-flags)))
+    (when (and flags (eq terminal (frame-terminal)))
+      (kitty-keyboard-mode-enable flags))))
+
 (defun xterm--init-kitty-keyboard (&optional flags)
   "Terminal initialization for the kitty keyboard protocol.
 FLAGS is the enhancement bitmask (default 1 = disambiguate).
@@ -1098,16 +1104,15 @@ sequences directly in tty_read_avail_input, so read-event and
 read-char see fully decoded key events."
   (let ((f (or flags 1)))
     (kitty-keyboard-mode-enable f)
+    ;; Store flags as terminal parameter for resume.
+    (set-terminal-parameter nil 'kitty-keyboard-flags f)
     ;; Register reset/set strings for tty suspend/resume.
     (push "\e[<u" (terminal-parameter nil 'tty-mode-reset-strings))
     (push (format "\e[>%du" f) (terminal-parameter nil 'tty-mode-set-strings))
     ;; Restore C-level kitty_keyboard_mode on resume, since
     ;; tty-mode-set-strings only sends the escape sequence to the
     ;; terminal but doesn't update the C struct.
-    (add-hook 'resume-tty-functions
-              (lambda (terminal)
-                (when (eq terminal (frame-terminal))
-                  (kitty-keyboard-mode-enable f))))))
+    (add-hook 'resume-tty-functions #'xterm--kitty-keyboard-resume)))
 
 (defun xterm--init-bracketed-paste-mode ()
   "Terminal initialization for bracketed paste mode."

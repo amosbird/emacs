@@ -54,6 +54,7 @@ along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.  */
 #endif /* HAVE_ANDROID */
 
 #include <errno.h>
+#include <limits.h>
 
 #ifdef HAVE_PTHREAD
 #include <pthread.h>
@@ -8172,30 +8173,62 @@ struct kitty_key_entry
 
 static const struct kitty_key_entry kitty_functional_keys[] =
   {
+    /* Special keys (kitty PUA 57344-57347).  */
+    { 57344, 0xff1b },  /* ESCAPE */
+    { 57345, 0xff0d },  /* ENTER */
+    { 57346, 0xff09 },  /* TAB */
+    { 57347, 0xff08 },  /* BACKSPACE */
+
+    /* Navigation keys (kitty PUA 57348-57357).  */
+    { 57348, 0xff63 },  /* INSERT */
+    { 57349, 0xffff },  /* DELETE */
+    { 57350, 0xff51 },  /* LEFT */
+    { 57351, 0xff53 },  /* RIGHT */
+    { 57352, 0xff52 },  /* UP */
+    { 57353, 0xff54 },  /* DOWN */
+    { 57354, 0xff55 },  /* PAGE_UP */
+    { 57355, 0xff56 },  /* PAGE_DOWN */
+    { 57356, 0xff50 },  /* HOME */
+    { 57357, 0xff57 },  /* END */
+
+    /* F1-F12 (kitty PUA 57364-57375).  */
+    { 57364, 0xffbe },  /* F1 */
+    { 57365, 0xffbf },  /* F2 */
+    { 57366, 0xffc0 },  /* F3 */
+    { 57367, 0xffc1 },  /* F4 */
+    { 57368, 0xffc2 },  /* F5 */
+    { 57369, 0xffc3 },  /* F6 */
+    { 57370, 0xffc4 },  /* F7 */
+    { 57371, 0xffc5 },  /* F8 */
+    { 57372, 0xffc6 },  /* F9 */
+    { 57373, 0xffc7 },  /* F10 */
+    { 57374, 0xffc8 },  /* F11 */
+    { 57375, 0xffc9 },  /* F12 */
+
     /* F13-F35 (kitty PUA 57376-57398).  */
-    { 57376, 0xffc8 },  /* F13 */
-    { 57377, 0xffc9 },  /* F14 */
-    { 57378, 0xffca },  /* F15 */
-    { 57379, 0xffcb },  /* F16 */
-    { 57380, 0xffcc },  /* F17 */
-    { 57381, 0xffcd },  /* F18 */
-    { 57382, 0xffce },  /* F19 */
-    { 57383, 0xffcf },  /* F20 */
-    { 57384, 0xffd0 },  /* F21 */
-    { 57385, 0xffd1 },  /* F22 */
-    { 57386, 0xffd2 },  /* F23 */
-    { 57387, 0xffd3 },  /* F24 */
-    { 57388, 0xffd4 },  /* F25 */
-    { 57389, 0xffd5 },  /* F26 */
-    { 57390, 0xffd6 },  /* F27 */
-    { 57391, 0xffd7 },  /* F28 */
-    { 57392, 0xffd8 },  /* F29 */
-    { 57393, 0xffd9 },  /* F30 */
-    { 57394, 0xffda },  /* F31 */
-    { 57395, 0xffdb },  /* F32 */
-    { 57396, 0xffdc },  /* F33 */
-    { 57397, 0xffdd },  /* F34 */
-    { 57398, 0xffde },  /* F35 */
+    { 57376, 0xffca },  /* F13 */
+    { 57377, 0xffcb },  /* F14 */
+    { 57378, 0xffcc },  /* F15 */
+    { 57379, 0xffcd },  /* F16 */
+    { 57380, 0xffce },  /* F17 */
+    { 57381, 0xffcf },  /* F18 */
+    { 57382, 0xffd0 },  /* F19 */
+    { 57383, 0xffd1 },  /* F20 */
+    { 57384, 0xffd2 },  /* F21 */
+    { 57385, 0xffd3 },  /* F22 */
+    { 57386, 0xffd4 },  /* F23 */
+    { 57387, 0xffd5 },  /* F24 */
+    { 57388, 0xffd6 },  /* F25 */
+    { 57389, 0xffd7 },  /* F26 */
+    { 57390, 0xffd8 },  /* F27 */
+    { 57391, 0xffd9 },  /* F28 */
+    { 57392, 0xffda },  /* F29 */
+    { 57393, 0xffdb },  /* F30 */
+    { 57394, 0xffdc },  /* F31 */
+    { 57395, 0xffdd },  /* F32 */
+    { 57396, 0xffde },  /* F33 */
+    { 57397, 0xffdf },  /* F34 */
+    { 57398, 0xffe0 },  /* F35 */
 
     /* Keypad keys (kitty PUA 57399-57427).  */
     { 57399, 0xffb0 },  /* KP_0 */
@@ -8725,7 +8758,8 @@ tty_read_avail_input (struct terminal *terminal,
 		    param_count = 1;
 		  int *p = parsing_sub ? &sub_params[param_count - 1]
 				       : &params[param_count - 1];
-		  if (*p > INT_MAX / 10)
+		  if (*p > INT_MAX / 10
+		      || (*p == INT_MAX / 10 && (c - '0') > INT_MAX % 10))
 		    goto emit_raw_csi_sequence;  /* Overflow, bail out.  */
 		  *p = *p * 10 + (c - '0');
 		  j++;
@@ -8770,9 +8804,15 @@ tty_read_avail_input (struct terminal *terminal,
 		      memcpy (tty->kitty_pending, cbuf + seq_start,
 			      remaining);
 		      tty->kitty_pending_count = remaining;
+		      break;
 		    }
-		  /* Don't process these bytes further.  */
-		  break;
+		  else
+		    {
+		      /* Incomplete sequence too large for pending buffer.
+			 Emit as raw events rather than silently discarding.  */
+		      j = nread;
+		      goto emit_raw_csi_sequence;
+		    }
 		}
 	      /* Not a valid kitty sequence.  Emit bytes as a contiguous
 		 batch so input-decode-map can reassemble them.  */
