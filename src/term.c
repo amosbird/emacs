@@ -755,20 +755,6 @@ encode_terminal_code (struct glyph *src, int src_len,
 
 /* An implementation of write_glyphs for termcap frames. */
 
-/* Return the total display width (in columns) of LEN glyphs
-   starting at STRING.  For CHAR_GLYPHs each struct is 1 column
-   (wide characters use padding glyphs), but COMPOSITE_GLYPHs may
-   span multiple columns in a single struct.  */
-
-static int
-tty_glyphs_width (struct glyph *string, int len)
-{
-  int width = 0;
-  for (int i = 0; i < len; i++)
-    width += string[i].pixel_width;
-  return width;
-}
-
 static void
 tty_write_glyphs_1 (struct frame *f, struct glyph *string, int len)
 {
@@ -779,7 +765,7 @@ tty_write_glyphs_1 (struct frame *f, struct glyph *string, int len)
   if (len == 0)
     return;
 
-  cmplus (tty, tty_glyphs_width (string, len));
+  cmplus (tty, len);
 
   /* If terminal_coding does any conversion, use it, otherwise use
      safe_terminal_coding.  We can't use CODING_REQUIRE_ENCODING here
@@ -854,7 +840,7 @@ tty_write_glyphs_with_face (struct frame *f, struct glyph *string,
   if (len <= 0)
     return;
 
-  cmplus (tty, tty_glyphs_width (string, len));
+  cmplus (tty, len);
 
   /* If terminal_coding does any conversion, use it, otherwise use
      safe_terminal_coding.  We can't use CODING_REQUIRE_ENCODING here
@@ -914,7 +900,7 @@ tty_insert_glyphs (struct frame *f, struct glyph *start, int len)
     }
 
   tty_turn_on_insert (tty);
-  cmplus (tty, start ? tty_glyphs_width (start, len) : len);
+  cmplus (tty, len);
 
   if (! start)
     space[0] = SPACEGLYPH;
@@ -990,7 +976,7 @@ tty_write_glyphs (struct frame *f, struct glyph *string, int len)
      since that would scroll the whole frame on some terminals.  */
   if (AutoWrap (tty)
       && curY (tty) + 1 == FRAME_TOTAL_LINES (f)
-      && curX (tty) + tty_glyphs_width (string, len) == FRAME_COLS (f)
+      && curX (tty) + len == FRAME_COLS (f)
       && len > 0)
     {
       /* If writing only one glyph in the last column, make that two so
@@ -1785,61 +1771,85 @@ produce_glyphs (struct it *it)
 static void
 append_composite_glyph (struct it *it)
 {
-  struct glyph *glyph;
+  struct glyph *glyph, *end;
+  int i;
 
   eassert (it->glyph_row);
   glyph = it->glyph_row->glyphs[it->area] + it->glyph_row->used[it->area];
-  if (glyph < it->glyph_row->glyphs[1 + it->area])
+  end = it->glyph_row->glyphs[1 + it->area];
+  if (glyph < end)
     {
       /* If the glyph row is reversed, we need to prepend the glyph
 	 rather than append it.  */
       if (it->glyph_row->reversed_p && it->area == TEXT_AREA)
 	{
 	  struct glyph *g;
+	  int move_by = it->pixel_width;
 
-	  /* Make room for the new glyph.  */
+	  /* Make room for the new glyphs.  */
+	  if (move_by > end - glyph)
+	    move_by = end - glyph;
 	  for (g = glyph - 1; g >= it->glyph_row->glyphs[it->area]; g--)
-	    g[1] = *g;
+	    g[move_by] = *g;
 	  glyph = it->glyph_row->glyphs[it->area];
-	}
-      glyph->type = COMPOSITE_GLYPH;
-      eassert (it->pixel_width <= SHRT_MAX);
-      glyph->pixel_width = it->pixel_width;
-      glyph->u.cmp.id = it->cmp_it.id;
-      if (it->cmp_it.ch < 0)
-	{
-	  glyph->u.cmp.automatic = 0;
-	  glyph->u.cmp.id = it->cmp_it.id;
-	}
-      else
-	{
-	  glyph->u.cmp.automatic = 1;
-	  glyph->u.cmp.id = it->cmp_it.id;
-	  glyph->slice.cmp.from = it->cmp_it.from;
-	  glyph->slice.cmp.to = it->cmp_it.to - 1;
+	  end = glyph + move_by;
 	}
 
-      glyph->avoid_cursor_p = it->avoid_cursor_p;
-      glyph->multibyte_p = it->multibyte_p;
-      glyph->frame = it->f;
-      glyph->face_id = it->face_id;
-      glyph->padding_p = false;
-      glyph->charpos = CHARPOS (it->position);
-      glyph->object = it->object;
-      if (it->bidi_p)
+      /* Like append_glyph for CHAR_GLYPHs, produce pixel_width glyph
+	 structs so that terminal code which uses glyph count as column
+	 count (cmplus, cursor_to in dispnew.c, etc.) works correctly.
+	 The first glyph is the real COMPOSITE_GLYPH; the rest are
+	 CHAR_GLYPH padding placeholders that encode_terminal_code
+	 will skip.  */
+      for (i = 0; i < it->pixel_width && glyph < end; i++)
 	{
-	  glyph->resolved_level = it->bidi_it.resolved_level;
-	  eassert ((it->bidi_it.type & 7) == it->bidi_it.type);
-	  glyph->bidi_type = it->bidi_it.type;
-	}
-      else
-	{
-	  glyph->resolved_level = 0;
-	  glyph->bidi_type = UNKNOWN_BT;
-	}
+	  if (i == 0)
+	    {
+	      glyph->type = COMPOSITE_GLYPH;
+	      glyph->pixel_width = 1;
+	      glyph->u.cmp.id = it->cmp_it.id;
+	      if (it->cmp_it.ch < 0)
+		{
+		  glyph->u.cmp.automatic = 0;
+		  glyph->u.cmp.id = it->cmp_it.id;
+		}
+	      else
+		{
+		  glyph->u.cmp.automatic = 1;
+		  glyph->u.cmp.id = it->cmp_it.id;
+		  glyph->slice.cmp.from = it->cmp_it.from;
+		  glyph->slice.cmp.to = it->cmp_it.to - 1;
+		}
+	    }
+	  else
+	    {
+	      glyph->type = CHAR_GLYPH;
+	      glyph->pixel_width = 1;
+	      glyph->u.ch = ' ';
+	    }
 
-      ++it->glyph_row->used[it->area];
-      ++glyph;
+	  glyph->avoid_cursor_p = it->avoid_cursor_p;
+	  glyph->multibyte_p = it->multibyte_p;
+	  glyph->frame = it->f;
+	  glyph->face_id = it->face_id;
+	  glyph->padding_p = i > 0;
+	  glyph->charpos = CHARPOS (it->position);
+	  glyph->object = it->object;
+	  if (it->bidi_p)
+	    {
+	      glyph->resolved_level = it->bidi_it.resolved_level;
+	      eassert ((it->bidi_it.type & 7) == it->bidi_it.type);
+	      glyph->bidi_type = it->bidi_it.type;
+	    }
+	  else
+	    {
+	      glyph->resolved_level = 0;
+	      glyph->bidi_type = UNKNOWN_BT;
+	    }
+
+	  ++it->glyph_row->used[it->area];
+	  ++glyph;
+	}
     }
 }
 
@@ -1865,7 +1875,7 @@ produce_composite_glyph (struct it *it)
       it->pixel_width = composition_gstring_width (gstring, it->cmp_it.from,
 						   it->cmp_it.to, NULL);
     }
-  it->nglyphs = 1;
+  it->nglyphs = it->pixel_width;
   if (it->glyph_row)
     append_composite_glyph (it);
 }
