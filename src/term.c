@@ -755,6 +755,20 @@ encode_terminal_code (struct glyph *src, int src_len,
 
 /* An implementation of write_glyphs for termcap frames. */
 
+/* Return the total display width (in columns) of LEN glyphs
+   starting at STRING.  For CHAR_GLYPHs each struct is 1 column
+   (wide characters use padding glyphs), but COMPOSITE_GLYPHs may
+   span multiple columns in a single struct.  */
+
+static int
+tty_glyphs_width (struct glyph *string, int len)
+{
+  int width = 0;
+  for (int i = 0; i < len; i++)
+    width += string[i].pixel_width;
+  return width;
+}
+
 static void
 tty_write_glyphs_1 (struct frame *f, struct glyph *string, int len)
 {
@@ -765,7 +779,7 @@ tty_write_glyphs_1 (struct frame *f, struct glyph *string, int len)
   if (len == 0)
     return;
 
-  cmplus (tty, len);
+  cmplus (tty, tty_glyphs_width (string, len));
 
   /* If terminal_coding does any conversion, use it, otherwise use
      safe_terminal_coding.  We can't use CODING_REQUIRE_ENCODING here
@@ -840,7 +854,7 @@ tty_write_glyphs_with_face (struct frame *f, struct glyph *string,
   if (len <= 0)
     return;
 
-  cmplus (tty, len);
+  cmplus (tty, tty_glyphs_width (string, len));
 
   /* If terminal_coding does any conversion, use it, otherwise use
      safe_terminal_coding.  We can't use CODING_REQUIRE_ENCODING here
@@ -900,7 +914,7 @@ tty_insert_glyphs (struct frame *f, struct glyph *start, int len)
     }
 
   tty_turn_on_insert (tty);
-  cmplus (tty, len);
+  cmplus (tty, start ? tty_glyphs_width (start, len) : len);
 
   if (! start)
     space[0] = SPACEGLYPH;
@@ -976,7 +990,7 @@ tty_write_glyphs (struct frame *f, struct glyph *string, int len)
      since that would scroll the whole frame on some terminals.  */
   if (AutoWrap (tty)
       && curY (tty) + 1 == FRAME_TOTAL_LINES (f)
-      && curX (tty) + len == FRAME_COLS (f)
+      && curX (tty) + tty_glyphs_width (string, len) == FRAME_COLS (f)
       && len > 0)
     {
       /* If writing only one glyph in the last column, make that two so
