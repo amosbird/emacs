@@ -9023,6 +9023,56 @@ tty_read_avail_input (struct terminal *terminal,
 
       /* Legacy byte-by-byte processing.  */
     not_kitty_csi:
+
+      /* When kitty keyboard mode is active, IME may sometimes send raw
+	 UTF-8 bytes instead of CSI u sequences.  Decode complete UTF-8
+	 sequences here so they become proper MULTIBYTE_CHAR_KEYSTROKE
+	 events instead of being split into individual bytes displayed
+	 as \NNN escape characters.  */
+      if (tty->kitty_keyboard_mode > 0
+	  && (cbuf[i] & 0xC0) == 0xC0)
+	{
+	  unsigned char c0 = cbuf[i];
+	  int nbytes, codepoint;
+
+	  if ((c0 & 0xE0) == 0xC0)      { nbytes = 2; codepoint = c0 & 0x1F; }
+	  else if ((c0 & 0xF0) == 0xE0) { nbytes = 3; codepoint = c0 & 0x0F; }
+	  else if ((c0 & 0xF8) == 0xF0) { nbytes = 4; codepoint = c0 & 0x07; }
+	  else goto legacy_byte;
+
+	  if (i + nbytes > nread)
+	    {
+	      /* Incomplete UTF-8 at end of buffer.  Save for next read.  */
+	      int remaining = nread - i;
+	      if (remaining <= (int) sizeof tty->kitty_pending)
+		{
+		  memcpy (tty->kitty_pending, cbuf + i, remaining);
+		  tty->kitty_pending_count = remaining;
+		}
+	      break;
+	    }
+
+	  bool valid = true;
+	  for (int k = 1; k < nbytes; k++)
+	    {
+	      if ((cbuf[i + k] & 0xC0) != 0x80)
+		{ valid = false; break; }
+	      codepoint = (codepoint << 6) | (cbuf[i + k] & 0x3F);
+	    }
+
+	  if (valid && codepoint >= 128)
+	    {
+	      buf.kind = MULTIBYTE_CHAR_KEYSTROKE_EVENT;
+	      buf.code = codepoint;
+	      buf.modifiers = 0;
+	      kbd_buffer_store_event (&buf);
+	      i += nbytes - 1;  /* -1 for the for-loop i++ */
+	      continue;
+	    }
+	  /* Invalid UTF-8; fall through to legacy single-byte handling.  */
+	}
+
+    legacy_byte:
       buf.kind = ASCII_KEYSTROKE_EVENT;
       buf.modifiers = 0;
       if (tty->meta_key == 1 && (cbuf[i] & 0x80))
