@@ -226,6 +226,507 @@ If the multibyte character does not represent a byte, return -1.  */)
 }
 
 
+/* Emoji sequence width calculation for terminal display.
+   Like the kitty keyboard protocol parser, this handles multi-codepoint
+   sequences directly in C rather than relying on font shaping.
+
+   Terminals display emoji sequences (ZWJ, skin tone, flags, keycap,
+   tag sequences) as a single 2-column-wide glyph.  Without
+   sequence-aware parsing, Emacs sums individual codepoint widths
+   and gets the wrong answer (e.g. 8 instead of 2 for a family emoji).  */
+
+/* Return true if C is an Emoji_Presentation=Yes codepoint, i.e. one
+   that terminals render as a 2-column emoji glyph by default.  This
+   covers the same ranges set to width 2 in characters.el.  */
+
+static bool
+emoji_presentation_p (int c)
+{
+  /* Fast reject for common ASCII / Latin range.  */
+  if (c < 0x231A)
+    return false;
+
+  /* Miscellaneous Symbols and Dingbats range.  */
+  if (c <= 0x2BFF)
+    {
+      switch (c)
+        {
+        case 0x231A: case 0x231B:
+        case 0x23E9: case 0x23EA: case 0x23EB: case 0x23EC:
+        case 0x23F0: case 0x23F3:
+        case 0x25FD: case 0x25FE:
+        case 0x2614: case 0x2615:
+        case 0x267F:
+        case 0x2693:
+        case 0x26A1:
+        case 0x26AA: case 0x26AB:
+        case 0x26BD: case 0x26BE:
+        case 0x26C4: case 0x26C5:
+        case 0x26CE:
+        case 0x26D4:
+        case 0x26EA:
+        case 0x26F2: case 0x26F3:
+        case 0x26F5:
+        case 0x26FA:
+        case 0x26FD:
+        case 0x2705:
+        case 0x270A: case 0x270B:
+        case 0x2728:
+        case 0x274C: case 0x274E:
+        case 0x2753: case 0x2754: case 0x2755:
+        case 0x2757:
+        case 0x2795: case 0x2796: case 0x2797:
+        case 0x27B0: case 0x27BF:
+        case 0x2B1B: case 0x2B1C:
+        case 0x2B50: case 0x2B55:
+          return true;
+        }
+      if (c >= 0x2648 && c <= 0x2653)
+        return true;
+      return false;
+    }
+
+  /* Supplementary Multilingual Plane emoji.  */
+  if (c >= 0x1F000)
+    {
+      /* Regional Indicator Symbols.  */
+      if (c >= 0x1F1E6 && c <= 0x1F1FF)
+        return true;
+
+      /* Main emoji blocks.  Rather than listing every sub-range,
+         use the contiguous blocks from Unicode Emoji data.  */
+      if (c >= 0x1F300 && c <= 0x1F64F)
+        return true;
+      if (c >= 0x1F680 && c <= 0x1F6FC)
+        return true;
+      if (c >= 0x1F7E0 && c <= 0x1F7EB)
+        return true;
+      if (c == 0x1F7F0)
+        return true;
+      if (c >= 0x1F90C && c <= 0x1F9FF)
+        return true;
+      if (c >= 0x1FA70 && c <= 0x1FAF8)
+        return true;
+
+      /* Additional specific emoji.  */
+      if (c == 0x1F004 || c == 0x1F0CF || c == 0x1F18E)
+        return true;
+      if (c >= 0x1F191 && c <= 0x1F19A)
+        return true;
+      if (c == 0x1F201 || c == 0x1F21A || c == 0x1F22F)
+        return true;
+      if (c >= 0x1F232 && c <= 0x1F236)
+        return true;
+      if (c >= 0x1F238 && c <= 0x1F23A)
+        return true;
+      if (c >= 0x1F250 && c <= 0x1F251)
+        return true;
+      if (c >= 0x1F3FB && c <= 0x1F3FF)
+        return true;
+    }
+
+  return false;
+}
+
+/* Return true if C is an Emoji=Yes but Emoji_Presentation=No codepoint,
+   i.e. a "text-default" emoji that becomes a 2-column emoji glyph only
+   when followed by VS16 (U+FE0F).  Examples: © ® ⚠ ☁ ✈ ⚔ ♻ ☀ ⬆.
+   Derived from emoji-sequences.txt (Unicode 17.0):
+     Basic_Emoji entries that contain FE0F.
+   This matches kitty's text sizing protocol algorithm:
+     "All Basic_Emoji have width two unless they are followed
+     by FE0F in the file."  */
+
+static bool
+emoji_text_default_p (int c)
+{
+  /* U+00A9 COPYRIGHT SIGN and U+00AE REGISTERED SIGN.
+     These are Basic_Emoji that require FE0F per emoji-sequences.txt.  */
+  if (c == 0x00A9 || c == 0x00AE)
+    return true;
+
+  /* BMP text-default emoji (108 codepoints from 0x203C up).  */
+  if (c < 0x203C)
+    return false;
+
+  if (c <= 0x3299)
+    {
+      switch (c)
+        {
+        case 0x203C: case 0x2049: case 0x2122: case 0x2139:
+          return true;
+        }
+
+      if (c >= 0x2194 && c <= 0x2199) return true;
+      if (c >= 0x21A9 && c <= 0x21AA) return true;
+
+      if (c == 0x2328 || c == 0x23CF) return true;
+      if (c >= 0x23ED && c <= 0x23EF) return true;
+      if (c >= 0x23F1 && c <= 0x23F2) return true;
+      if (c >= 0x23F8 && c <= 0x23FA) return true;
+
+      if (c == 0x24C2) return true;
+      if (c >= 0x25AA && c <= 0x25AB) return true;
+      if (c == 0x25B6 || c == 0x25C0) return true;
+      if (c >= 0x25FB && c <= 0x25FC) return true;
+
+      if (c >= 0x2600 && c <= 0x2604) return true;
+      if (c == 0x260E || c == 0x2611) return true;
+      if (c == 0x2618 || c == 0x261D) return true;
+      if (c == 0x2620) return true;
+      if (c >= 0x2622 && c <= 0x2623) return true;
+      if (c == 0x2626 || c == 0x262A) return true;
+      if (c >= 0x262E && c <= 0x262F) return true;
+      if (c >= 0x2638 && c <= 0x263A) return true;
+      if (c == 0x2640 || c == 0x2642) return true;
+      if (c >= 0x265F && c <= 0x2660) return true;
+      if (c == 0x2663) return true;
+      if (c >= 0x2665 && c <= 0x2666) return true;
+      if (c == 0x2668 || c == 0x267B || c == 0x267E) return true;
+      if (c == 0x2692) return true;
+      if (c >= 0x2694 && c <= 0x2697) return true;
+      if (c == 0x2699) return true;
+      if (c >= 0x269B && c <= 0x269C) return true;
+      if (c == 0x26A0 || c == 0x26A7) return true;
+      if (c >= 0x26B0 && c <= 0x26B1) return true;
+      if (c == 0x26C8 || c == 0x26CF || c == 0x26D1 || c == 0x26D3) return true;
+      if (c == 0x26E9) return true;
+      if (c >= 0x26F0 && c <= 0x26F1) return true;
+      if (c == 0x26F4) return true;
+      if (c >= 0x26F7 && c <= 0x26F9) return true;
+
+      if (c == 0x2702) return true;
+      if (c >= 0x2708 && c <= 0x2709) return true;
+      if (c >= 0x270C && c <= 0x270D) return true;
+      if (c == 0x270F || c == 0x2712 || c == 0x2714 || c == 0x2716) return true;
+      if (c == 0x271D || c == 0x2721) return true;
+      if (c >= 0x2733 && c <= 0x2734) return true;
+      if (c == 0x2744 || c == 0x2747) return true;
+      if (c >= 0x2763 && c <= 0x2764) return true;
+      if (c == 0x27A1) return true;
+      if (c >= 0x2934 && c <= 0x2935) return true;
+      if (c >= 0x2B05 && c <= 0x2B07) return true;
+
+      if (c == 0x3030 || c == 0x303D || c == 0x3297 || c == 0x3299) return true;
+
+      return false;
+    }
+
+  /* SMP text-default emoji (97 codepoints).  */
+  if (c >= 0x1F170)
+    {
+      if (c >= 0x1F170 && c <= 0x1F171) return true;
+      if (c >= 0x1F17E && c <= 0x1F17F) return true;
+      if (c == 0x1F202 || c == 0x1F237) return true;
+      if (c == 0x1F321) return true;
+      if (c >= 0x1F324 && c <= 0x1F32C) return true;
+      if (c == 0x1F336 || c == 0x1F37D) return true;
+      if (c >= 0x1F396 && c <= 0x1F397) return true;
+      if (c >= 0x1F399 && c <= 0x1F39B) return true;
+      if (c >= 0x1F39E && c <= 0x1F39F) return true;
+      if (c >= 0x1F3CB && c <= 0x1F3CE) return true;
+      if (c >= 0x1F3D4 && c <= 0x1F3DF) return true;
+      if (c == 0x1F3F3 || c == 0x1F3F5 || c == 0x1F3F7) return true;
+      if (c == 0x1F43F || c == 0x1F441) return true;
+      if (c == 0x1F4FD) return true;
+      if (c >= 0x1F549 && c <= 0x1F54A) return true;
+      if (c >= 0x1F56F && c <= 0x1F570) return true;
+      if (c >= 0x1F573 && c <= 0x1F579) return true;
+      if (c == 0x1F587) return true;
+      if (c >= 0x1F58A && c <= 0x1F58D) return true;
+      if (c == 0x1F590) return true;
+      if (c == 0x1F5A5 || c == 0x1F5A8) return true;
+      if (c >= 0x1F5B1 && c <= 0x1F5B2) return true;
+      if (c == 0x1F5BC) return true;
+      if (c >= 0x1F5C2 && c <= 0x1F5C4) return true;
+      if (c >= 0x1F5D1 && c <= 0x1F5D3) return true;
+      if (c >= 0x1F5DC && c <= 0x1F5DE) return true;
+      if (c == 0x1F5E1 || c == 0x1F5E3 || c == 0x1F5E8) return true;
+      if (c == 0x1F5EF || c == 0x1F5F3 || c == 0x1F5FA) return true;
+      if (c == 0x1F6CB) return true;
+      if (c >= 0x1F6CD && c <= 0x1F6CF) return true;
+      if (c >= 0x1F6E0 && c <= 0x1F6E5) return true;
+      if (c == 0x1F6E9 || c == 0x1F6F0 || c == 0x1F6F3) return true;
+    }
+
+  return false;
+}
+
+/* Return true if C is a Regional Indicator Symbol (U+1F1E6..U+1F1FF).  */
+static bool
+regional_indicator_p (int c)
+{
+  return c >= 0x1F1E6 && c <= 0x1F1FF;
+}
+
+/* Return true if C is an emoji skin-tone modifier (U+1F3FB..U+1F3FF).  */
+static bool
+emoji_modifier_p (int c)
+{
+  return c >= 0x1F3FB && c <= 0x1F3FF;
+}
+
+/* Return true if C is a tag character (U+E0020..U+E007E) or
+   cancel tag (U+E007F), used in flag tag sequences like
+   subdivision flags (e.g. 🏴󠁧󠁢󠁥󠁮󠁧󠁿 England flag).  */
+static bool
+emoji_tag_p (int c)
+{
+  return c >= 0xE0020 && c <= 0xE007F;
+}
+
+
+
+/* Scan an emoji sequence starting at STR (pointing into a UTF-8
+   buffer of LIMIT total bytes).  If the codepoint at STR begins
+   an emoji sequence, consume the full sequence and return:
+     - The display width (always 2 for a valid emoji sequence)
+     - *CONSUMED set to the number of bytes consumed
+   If STR does not start an emoji sequence, return 0 and leave
+   *CONSUMED unchanged.
+
+   Recognized emoji sequence types (per UTS #51):
+   1. Emoji + ZWJ + Emoji + ... (ZWJ sequences: family, profession)
+   2. Emoji + Skin-tone modifier (modified emoji)
+   3. Regional_Indicator + Regional_Indicator (flag pairs)
+   4. Emoji + VS16 (text-to-emoji presentation switch)
+   5. Emoji + Tag_chars + Cancel_Tag (subdivision flag sequences)
+   6. [0-9#*] + VS16 + U+20E3 (keycap sequences)
+
+   Each of these displays as a single 2-column glyph in a terminal.  */
+
+static int
+emoji_sequence_width (const unsigned char *str, ptrdiff_t limit,
+                      ptrdiff_t *consumed)
+{
+  if (limit <= 0)
+    return 0;
+
+  int bytes;
+  int c = string_char_and_length (str, &bytes);
+
+  /* Case 1: Keycap sequences: [0-9#*] + FE0F + 20E3.
+     These are single-width ASCII chars that become 2-wide emoji
+     when followed by VS16 + combining enclosing keycap.  */
+  if ((c >= '0' && c <= '9') || c == '#' || c == '*')
+    {
+      if (bytes < limit)
+        {
+          int b2;
+          int c2 = string_char_and_length (str + bytes, &b2);
+          if (c2 == 0xFE0F && bytes + b2 < limit)
+            {
+              int b3;
+              int c3 = string_char_and_length (str + bytes + b2, &b3);
+              if (c3 == 0x20E3)
+                {
+                  *consumed = bytes + b2 + b3;
+                  return 2;
+                }
+            }
+        }
+      return 0;  /* Not a keycap sequence, return to normal processing.  */
+    }
+
+  /* Quick reject for non-emoji codepoints.  */
+  if (c < 0x200D && !emoji_presentation_p (c) && !emoji_text_default_p (c))
+    return 0;
+
+  /* Case 2: Regional Indicator pairs -> flag emoji.  */
+  if (regional_indicator_p (c))
+    {
+      if (bytes < limit)
+        {
+          int b2;
+          int c2 = string_char_and_length (str + bytes, &b2);
+          if (regional_indicator_p (c2))
+            {
+              *consumed = bytes + b2;
+              return 2;
+            }
+        }
+      /* Lone regional indicator -- use char-width-table default.  */
+      return 0;
+    }
+
+  /* Case 3: Text-default emoji + VS16 (FE0F) -> emoji presentation.
+     These are Emoji=Yes but Emoji_Presentation=No codepoints that
+     become 2-column emoji only when followed by U+FE0F.
+     Examples: U+26A0 WARNING SIGN, U+2708 AIRPLANE, etc.  */
+  if (emoji_text_default_p (c))
+    {
+      if (bytes < limit)
+        {
+          int b2;
+          int c2 = string_char_and_length (str + bytes, &b2);
+          if (c2 == 0xFE0F)
+            {
+              /* Text-default emoji + VS16 = 2-column emoji.
+                 Continue scanning for ZWJ continuations.  */
+              ptrdiff_t pos = bytes + b2;
+
+              for (;;)
+                {
+                  if (pos >= limit)
+                    break;
+
+                  int nb;
+                  int next = string_char_and_length (str + pos, &nb);
+
+                  /* Skin-tone modifier.  */
+                  if (emoji_modifier_p (next))
+                    {
+                      pos += nb;
+                      continue;
+                    }
+
+                  /* ZWJ followed by another emoji.  */
+                  if (next == 0x200D && pos + nb < limit)
+                    {
+                      int nb2;
+                      int after_zwj
+                        = string_char_and_length (str + pos + nb, &nb2);
+                      if (emoji_presentation_p (after_zwj)
+                          || emoji_text_default_p (after_zwj)
+                          || after_zwj == 0xFE0F)
+                        {
+                          pos += nb + nb2;
+                          continue;
+                        }
+                      break;
+                    }
+
+                  /* VS16 after ZWJ target.  */
+                  if (next == 0xFE0F)
+                    {
+                      pos += nb;
+                      continue;
+                    }
+
+                  /* Combining Enclosing Keycap.  */
+                  if (next == 0x20E3)
+                    {
+                      pos += nb;
+                      continue;
+                    }
+
+                  break;
+                }
+
+              *consumed = pos;
+              return 2;
+            }
+        }
+      /* Text-default emoji without VS16 -- not an emoji sequence,
+         fall through to normal width calculation.  */
+      return 0;
+    }
+
+  /* For the remaining cases, the first codepoint must be
+     an Emoji_Presentation=Yes character.  */
+  if (!emoji_presentation_p (c))
+    return 0;
+
+  /* Now scan forward consuming emoji modifiers, ZWJ continuations,
+     VS16, and tag sequences.  The whole thing = 2 columns.  */
+  ptrdiff_t pos = bytes;
+
+  for (;;)
+    {
+      if (pos >= limit)
+        break;
+
+      int nb;
+      int next = string_char_and_length (str + pos, &nb);
+
+      /* VS16 (Emoji presentation selector) -- consume it.  */
+      if (next == 0xFE0F)
+        {
+          pos += nb;
+          continue;
+        }
+
+      /* VS15 (Text presentation selector) -- switches to text
+         presentation.  Per kitty text sizing protocol: when an
+         Emoji_Presentation=Yes codepoint is followed by VS15,
+         its width decreases to 1.  This only applies immediately
+         after the base codepoint, not deep inside a ZWJ chain.  */
+      if (next == 0xFE0E)
+        {
+          if (pos == bytes)
+            {
+              /* Immediately after base emoji -> width 1.  */
+              *consumed = pos + nb;
+              return 1;
+            }
+          /* Inside a multi-codepoint sequence, just consume it.  */
+          pos += nb;
+          continue;
+        }
+
+      /* Skin-tone modifier — consume it.  */
+      if (emoji_modifier_p (next))
+        {
+          pos += nb;
+          continue;
+        }
+
+      /* ZWJ (U+200D) followed by another emoji -- consume both.  */
+      if (next == 0x200D && pos + nb < limit)
+        {
+          int nb2;
+          int after_zwj = string_char_and_length (str + pos + nb, &nb2);
+          if (emoji_presentation_p (after_zwj)
+              || emoji_text_default_p (after_zwj)
+              || after_zwj == 0xFE0F   /* VS16 (skip) */
+              )
+            {
+              pos += nb + nb2;
+              continue;
+            }
+          /* Unknown codepoint after ZWJ -- stop consuming.
+             (Some terminals still render unknown ZWJ combos as
+             fallback, but we can't predict their width.)  */
+          break;
+        }
+
+      /* Tag characters (subdivision flag sequences like 🏴󠁧󠁢󠁥󠁮󠁧󠁿).  */
+      if (emoji_tag_p (next))
+        {
+          /* Consume all tag characters until cancel tag U+E007F.  */
+          while (pos < limit)
+            {
+              int tnb;
+              int tc = string_char_and_length (str + pos, &tnb);
+              pos += tnb;
+              if (tc == 0xE007F)  /* Cancel tag = end of sequence.  */
+                break;
+              if (!emoji_tag_p (tc))
+                break;
+            }
+          break;
+        }
+
+      /* Combining Enclosing Keycap (U+20E3) — consume it.  */
+      if (next == 0x20E3)
+        {
+          pos += nb;
+          continue;
+        }
+
+      /* Not a recognized continuation — sequence ends here.  */
+      break;
+    }
+
+  /* If we consumed more than just the base character, this is a
+     multi-codepoint emoji sequence → 2 columns.
+     If it's just the base character, also return 2 since
+     emoji_presentation_p characters are width 2.  */
+  *consumed = pos;
+  return 2;
+}
+
+
 /* Return width (columns) of C considering the buffer display table DP. */
 
 static ptrdiff_t
@@ -296,8 +797,42 @@ c_string_width (const unsigned char *str, ptrdiff_t len, int precision,
 
   while (i_byte < len)
     {
-      int bytes, c = string_char_and_length (str + i_byte, &bytes);
-      ptrdiff_t thiswidth = char_width (c, dp);
+      ptrdiff_t seq_consumed = 0;
+      int seq_width = emoji_sequence_width (str + i_byte, len - i_byte,
+					    &seq_consumed);
+      int bytes;
+      ptrdiff_t thiswidth;
+
+      if (seq_width > 0)
+	{
+	  thiswidth = seq_width;
+	  bytes = seq_consumed;
+	  /* Count characters in the consumed bytes.  */
+	  const unsigned char *p = str + i_byte;
+	  const unsigned char *pend = p + bytes;
+	  int nchars_consumed = 0;
+	  while (p < pend)
+	    {
+	      int cb;
+	      string_char_and_length (p, &cb);
+	      p += cb;
+	      nchars_consumed++;
+	    }
+	  if (0 < precision && precision - width < thiswidth)
+	    {
+	      *nchars = i;
+	      *nbytes = i_byte;
+	      return width;
+	    }
+	  if (ckd_add (&width, width, thiswidth))
+	    string_overflow ();
+	  i += nchars_consumed;
+	  i_byte += bytes;
+	  continue;
+	}
+
+      int c = string_char_and_length (str + i_byte, &bytes);
+      thiswidth = char_width (c, dp);
 
       if (0 < precision && precision - width < thiswidth)
 	{
@@ -309,7 +844,7 @@ c_string_width (const unsigned char *str, ptrdiff_t len, int precision,
 	string_overflow ();
       i++;
       i_byte += bytes;
-  }
+    }
 
   if (precision > 0)
     {
@@ -422,21 +957,47 @@ lisp_string_width (Lisp_Object string, ptrdiff_t from, ptrdiff_t to,
 	  bytes = string_char_to_byte (string, end) - i_byte;
 	}
 #endif	/* HAVE_WINDOW_SYSTEM */
-      else
+      else if (multibyte)
 	{
-	  int c;
+	  /* Check for emoji sequences that should be treated as a
+	     single 2-column glyph.  Like the kitty keyboard protocol
+	     parser, this handles sequences directly in C.  */
 	  unsigned char *str = SDATA (string);
-
-	  if (multibyte)
+	  ptrdiff_t remaining = string_char_to_byte (string, to) - i_byte;
+	  ptrdiff_t seq_consumed = 0;
+	  int seq_width = emoji_sequence_width (str + i_byte, remaining,
+						&seq_consumed);
+	  if (seq_width > 0)
 	    {
-	      int cbytes;
-	      c = string_char_and_length (str + i_byte, &cbytes);
-	      bytes = cbytes;
+	      thiswidth = seq_width;
+	      bytes = seq_consumed;
+	      /* Count characters consumed.  */
+	      const unsigned char *p = str + i_byte;
+	      const unsigned char *pend = p + seq_consumed;
+	      chars = 0;
+	      while (p < pend)
+		{
+		  int cb;
+		  string_char_and_length (p, &cb);
+		  p += cb;
+		  chars++;
+		}
 	    }
 	  else
-	    c = str[i_byte], bytes = 1;
+	    {
+	      int cbytes;
+	      int c = string_char_and_length (str + i_byte, &cbytes);
+	      bytes = cbytes;
+	      chars = 1;
+	      thiswidth = char_width (c, dp);
+	    }
+	}
+      else
+	{
+	  unsigned char *str = SDATA (string);
+	  bytes = 1;
 	  chars = 1;
-	  thiswidth = char_width (c, dp);
+	  thiswidth = char_width (str[i_byte], dp);
 	}
 
       if (0 < precision && precision - width < thiswidth)

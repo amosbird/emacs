@@ -839,13 +839,32 @@ prepending a space before it."
 	      (setq i (+ i 2)))
 	  (let ((from (lglyph-from glyph))
 		(to (lglyph-to glyph))
-		(j (1+ i)))
+		(base-i i)
+		(j (1+ i))
+		(has-variation-selector nil))
 	    (while (and (< j nglyphs)
 			(setq glyph (lgstring-glyph gstring j))
 			(char-charset (lglyph-char glyph) coding)
 			(= (lglyph-width glyph) 0))
+	      (when (or (= (lglyph-char glyph) #xFE0F)
+			(= (lglyph-char glyph) #xFE0E))
+		(setq has-variation-selector (lglyph-char glyph)))
 	      (setq to (lglyph-to glyph)
 		    j (1+ j)))
+	    ;; When an emoji variation selector follows a base
+	    ;; character, the display width may differ from the base
+	    ;; character's width.  VS16 (U+FE0F) switches text-default
+	    ;; emoji to emoji presentation (width 2).  VS15 (U+FE0E)
+	    ;; switches emoji-presentation characters to text
+	    ;; presentation (width 1).  Use string-width which calls
+	    ;; emoji_sequence_width to get the correct width.
+	    (when (and has-variation-selector (> j (1+ base-i)))
+	      (let* ((base-glyph (lgstring-glyph gstring base-i))
+		     (base-char (lglyph-char base-glyph))
+		     (seq-width (string-width
+				 (string base-char has-variation-selector))))
+		(when (/= seq-width (lglyph-width base-glyph))
+		  (lglyph-set-width base-glyph seq-width))))
 	    (while (< i j)
 	      (setq glyph (lgstring-glyph gstring i))
 	      (lglyph-set-from-to glyph from to)
