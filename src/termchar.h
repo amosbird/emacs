@@ -231,6 +231,20 @@ struct tty_display_info
 
   /* Cost of setting the scroll window, measured in characters.  */
   int scroll_region_cost;
+
+  /* Kitty keyboard protocol enhancement flags.  0 means disabled.
+     Bit 0 (1):  Disambiguate escape codes.
+     Bit 1 (2):  Report event types (press/repeat/release).
+     Bit 2 (4):  Report alternate keys.
+     Bit 3 (8):  Report all keys as escape codes.
+     Bit 4 (16): Report associated text.  */
+  int kitty_keyboard_mode;
+
+  /* Buffer for incomplete escape sequences from kitty keyboard protocol.
+     When a CSI sequence spans two reads, the partial bytes are saved here
+     and prepended to the next read.  */
+  unsigned char kitty_pending[64];
+  int kitty_pending_count;
 };
 
 /* A chain of structures for all tty devices currently in use. */

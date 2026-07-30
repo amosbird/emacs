@@ -82,6 +82,30 @@ other directory on your system.  You can also invoke the
 
 * Changes in Emacs 31.1
 
+---
+** Native support for the kitty keyboard protocol (CSI u).
+Emacs now natively supports the kitty keyboard protocol, which provides
+unambiguous key event reporting in terminal mode.  This is parsed at the
+C level in 'tty_read_avail_input', so 'read-event' and 'read-char' see
+fully decoded key events with correct modifier flags.
+
+Benefits over the legacy modifyOtherKeys protocol:
+- Full support for Super and Hyper modifiers in terminals.
+- Unambiguous Escape key (no timing hacks needed).
+- Ctrl+I distinguished from Tab, Ctrl+M from Return, etc.
+- Key release and repeat event support (when enabled).
+
+The protocol is auto-detected and enabled for known terminals: kitty,
+foot, WezTerm, ghostty, iTerm2, rio, alacritty.
+
+New Lisp functions:
+- 'kitty-keyboard-mode-enable' to enable the protocol.
+- 'kitty-keyboard-mode-disable' to disable it.
+- 'kitty-keyboard-mode-active-p' to query the current state.
+
+The 'xterm-extra-capabilities' defcustom now accepts 'kittyKeyboard'
+to explicitly enable kitty keyboard protocol support.
+
 +++
 ** 'line-spacing' now supports specifying spacing above the line.
 Previously, only spacing below the line could be specified.  The user

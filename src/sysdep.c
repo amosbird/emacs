@@ -1511,6 +1511,15 @@ reset_sys_modes (struct tty_display_info *tty_out)
   if (!tty_out->output)
     return;                     /* The tty is suspended. */
 
+  /* Disable kitty keyboard protocol before resetting the terminal,
+     so the terminal goes back to legacy key reporting.  */
+  if (tty_out->kitty_keyboard_mode > 0)
+    {
+      fwrite ("\033[<u", 1, 4, tty_out->output);
+      tty_out->kitty_keyboard_mode = 0;
+      tty_out->kitty_pending_count = 0;
+    }
+
   /* Go to and clear the last line of the terminal. */
 
   cmgoto (tty_out, FrameRows (tty_out) - 1, 0);

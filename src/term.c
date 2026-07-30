@@ -2587,6 +2587,156 @@ A value of zero means TTY uses the system's default value.  */)
 
 #endif /* !HAVE_ANDROID */
 
+DEFUN ("kitty-keyboard-mode-enable", Fkitty_keyboard_mode_enable,
+       Skitty_keyboard_mode_enable, 0, 2, 0, doc:
+       /* Enable kitty keyboard protocol on TTY.
+
+FLAGS specifies the progressive enhancement level as a bitmask:
+  1  - Disambiguate escape codes
+  2  - Report event types (press/repeat/release)
+  4  - Report alternate keys
+  8  - Report all keys as escape codes
+  16 - Report associated text
+FLAGS defaults to 1 if omitted.
+
+TTY may be a terminal object, a frame, or nil (meaning the selected
+frame's terminal).  */)
+  (Lisp_Object flags, Lisp_Object tty)
+{
+  struct terminal *terminal = decode_tty_terminal (tty);
+  if (!terminal)
+    error ("Not a tty terminal");
+
+  int flag_val = NILP (flags) ? 1 : check_integer_range (flags, 1, 31);
+  struct tty_display_info *t = terminal->display_info.tty;
+
+  if (t->output)
+    {
+      /* Send CSI > flags u to push kitty keyboard mode.  */
+      char seq[32];
+      int len = snprintf (seq, sizeof seq, "\033[>%du", flag_val);
+      fwrite (seq, 1, len, t->output);
+      fflush (t->output);
+    }
+
+  t->kitty_keyboard_mode = flag_val;
+  return make_fixnum (flag_val);
+}
+
+DEFUN ("kitty-keyboard-mode-disable", Fkitty_keyboard_mode_disable,
+       Skitty_keyboard_mode_disable, 0, 1, 0, doc:
+       /* Disable kitty keyboard protocol on TTY.
+
+Sends CSI < u to pop the kitty keyboard mode stack on the terminal.
+TTY may be a terminal object, a frame, or nil (meaning the selected
+frame's terminal).  */)
+  (Lisp_Object tty)
+{
+  struct terminal *terminal = decode_tty_terminal (tty);
+  if (!terminal)
+    error ("Not a tty terminal");
+
+  struct tty_display_info *t = terminal->display_info.tty;
+
+  if (t->output)
+    {
+      /* Send CSI < u to pop kitty keyboard mode.  */
+      fwrite ("\033[<u", 1, 4, t->output);
+      fflush (t->output);
+    }
+
+  t->kitty_keyboard_mode = 0;
+  t->kitty_pending_count = 0;
+  return Qnil;
+}
+
+DEFUN ("kitty-keyboard-mode-active-p", Fkitty_keyboard_mode_active_p,
+       Skitty_keyboard_mode_active_p, 0, 1, 0, doc:
+       /* Return the kitty keyboard protocol flags active on TTY, or nil.
+
+TTY may be a terminal object, a frame, or nil (meaning the selected
+frame's terminal).  Returns the enhancement flags as an integer,
+or nil if the kitty keyboard protocol is not active.  */)
+  (Lisp_Object tty)
+{
+  struct terminal *terminal = decode_tty_terminal (tty);
+  if (!terminal)
+    return Qnil;
+
+  int mode = terminal->display_info.tty->kitty_keyboard_mode;
+  return mode > 0 ? make_fixnum (mode) : Qnil;
+}
+
+DEFUN ("kitty-keyboard-mode-probe", Fkitty_keyboard_mode_probe,
+       Skitty_keyboard_mode_probe, 0, 1, 0, doc:
+       /* Probe whether TTY supports the kitty keyboard protocol.
+
+Sends CSI ? u to the terminal and waits briefly for a response.
+Returns the current flags (an integer, possibly 0) if the terminal
+responds, or nil if it does not (indicating no kitty support).
+
+TTY may be a terminal object, a frame, or nil (meaning the selected
+frame's terminal).  */)
+  (Lisp_Object tty)
+{
+  struct terminal *terminal = decode_tty_terminal (tty);
+  if (!terminal)
+    error ("Not a tty terminal");
+
+  struct tty_display_info *t = terminal->display_info.tty;
+  if (!t->output || !t->input)
+    error ("Terminal has no I/O channels");
+
+  int fd = fileno (t->input);
+
+  /* Flush any pending output, then send the query.  */
+  fflush (t->output);
+  fwrite ("\033[?u", 1, 4, t->output);
+  fflush (t->output);
+
+  /* Wait up to 500ms for a response.  */
+  struct timespec timeout = { .tv_sec = 0, .tv_nsec = 500000000 };
+  fd_set readfds;
+  FD_ZERO (&readfds);
+  FD_SET (fd, &readfds);
+
+  int ret = pselect (fd + 1, &readfds, NULL, NULL, &timeout, NULL);
+  if (ret <= 0)
+    return Qnil;  /* Timeout or error — not supported.  */
+
+  /* Read response bytes.  Expected: ESC [ ? DIGITS u  */
+  unsigned char buf[32];
+  ssize_t n = read (fd, buf, sizeof buf - 1);
+  if (n <= 0)
+    return Qnil;
+
+  /* Parse: skip to ESC [ ?, then read digits until 'u'.  */
+  int i = 0;
+  /* Find ESC [ ? prefix.  */
+  while (i + 2 < n)
+    {
+      if (buf[i] == 0x1b && buf[i + 1] == '[' && buf[i + 2] == '?')
+	{
+	  i += 3;
+	  goto found_prefix;
+	}
+      i++;
+    }
+  return Qnil;  /* No valid prefix found.  */
+
+ found_prefix:
+  {
+    int flags = 0;
+    while (i < n && buf[i] >= '0' && buf[i] <= '9')
+      flags = flags * 10 + (buf[i++] - '0');
+
+    if (i < n && buf[i] == 'u')
+      return make_fixnum (flags);
+  }
+
+  return Qnil;
+}
+
 
 /***********************************************************************
 			       Mouse
@@ -5203,6 +5353,11 @@ non-nil to enable this optimization.  */);
   defsubr (&Stty_frame_restack);
   defsubr (&Stty_display_pixel_width);
   defsubr (&Stty_display_pixel_height);
+
+  defsubr (&Skitty_keyboard_mode_enable);
+  defsubr (&Skitty_keyboard_mode_disable);
+  defsubr (&Skitty_keyboard_mode_active_p);
+  defsubr (&Skitty_keyboard_mode_probe);
 
 #if !defined DOS_NT && !defined HAVE_ANDROID
   default_orig_pair = NULL;
