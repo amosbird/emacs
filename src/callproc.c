@@ -1946,6 +1946,11 @@ make_environment_block (Lisp_Object current_dir)
 
 /* This is run before init_cmdargs.  */
 
+/* Keep this externally linked so compilers cannot fold PATH_INFO into a
+   dumped Lisp string.  Package managers can then relocate PATH_INFO before
+   Emacs initializes Vconfigure_info_directory at startup.  */
+const char *epaths_path_info = PATH_INFO;
+
 void
 init_callproc_1 (void)
 {
@@ -1961,6 +1966,8 @@ init_callproc_1 (void)
   Vexec_directory = Ffile_name_as_directory (Fcar (Vexec_path));
   /* FIXME?  For ns, path_exec should go at the front?  */
   Vexec_path = nconc2 (decode_env_path ("PATH", NULL, 0), Vexec_path);
+
+  Vconfigure_info_directory = build_string (epaths_path_info);
 }
 
 /* This is run after init_cmdargs, when Vinstallation_directory is valid.  */
@@ -2129,7 +2136,6 @@ This is usually the same as `data-directory'.  */);
 This is the name of the directory in which the build procedure installed
 Emacs's info files; the default value for `Info-default-directory-list'
 includes this.  */);
-  Vconfigure_info_directory = build_string (PATH_INFO);
 
   DEFVAR_LISP ("shared-game-score-directory", Vshared_game_score_directory,
 	       doc: /* Directory of score files for games which come with GNU Emacs.
