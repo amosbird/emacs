@@ -1226,9 +1226,6 @@ on a bare terminal emulators as well as inside the screen
 program.  When inside the screen program, this function also
 chops long DCS sequences into multiple smaller ones to avoid
 hitting screen's max DCS length."
-  (when (and (fboundp 'kitty-clipboard-set-selection)
-             (kitty-clipboard-set-selection type data))
-    (cl-return-from gui-backend-set-selection))
   (let* ((screen (eq (terminal-parameter nil 'terminal-initted)
                      'terminal-init-screen))
          (bytes (encode-coding-string data 'utf-8-unix))

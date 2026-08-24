@@ -2757,6 +2757,8 @@ frame's terminal).  */)
     if (i < n && buf[i] == 'u')
       {
         t->kitty_protocols = true;
+        Fset (intern ("interprogram-cut-function"),
+              intern ("kitty-clipboard-select-text"));
         return make_fixnum (flags);
       }
   }
@@ -2814,19 +2816,16 @@ kitty_clipboard_write (struct tty_display_info *tty, const char *data,
   unblock_input ();
 }
 
-DEFUN ("kitty-clipboard-set-selection", Fkitty_clipboard_set_selection,
-       Skitty_clipboard_set_selection, 2, 3, 0, doc:
-       /* Set kitty's system selection TYPE to DATA on TTY using OSC 5522.
+DEFUN ("kitty-clipboard-select-text", Fkitty_clipboard_select_text,
+       Skitty_clipboard_select_text, 1, 1, 0, doc:
+       /* Set kitty's system clipboard to TEXT using OSC 5522.
 
-TYPE must be `PRIMARY' or `CLIPBOARD', and DATA must be a string.  TTY may
-be a terminal object, a frame, or nil (meaning the selected frame's
-terminal).
-
-Return non-nil after sending the selection, or nil when TTY was not detected
-as a kitty terminal.  Detection is shared with `kitty-keyboard-mode-probe'.  */)
-  (Lisp_Object type, Lisp_Object data, Lisp_Object tty)
+This function is installed as `interprogram-cut-function' when
+`kitty-keyboard-mode-probe' detects kitty protocol support on the selected
+TTY.  TEXT is encoded as UTF-8 and sent in 4096-byte chunks.  */)
+  (Lisp_Object text)
 {
-  struct terminal *terminal = decode_tty_terminal (tty);
+  struct terminal *terminal = decode_tty_terminal (Qnil);
   if (!terminal)
     error ("Not a tty terminal");
 
@@ -2834,16 +2833,9 @@ as a kitty terminal.  Detection is shared with `kitty-keyboard-mode-probe'.  */)
   if (!t->kitty_protocols || !t->output)
     return Qnil;
 
-  CHECK_STRING (data);
-  Lisp_Object primary = intern ("PRIMARY");
-  Lisp_Object clipboard = intern ("CLIPBOARD");
-  if (!EQ (type, primary) && !EQ (type, clipboard))
-    error ("Invalid selection type");
-
-  Lisp_Object bytes = ENCODE_UTF_8 (data);
-  const char *start = EQ (type, primary)
-    ? "\033]5522;type=write:loc=primary\033\\"
-    : "\033]5522;type=write\033\\";
+  CHECK_STRING (text);
+  Lisp_Object bytes = ENCODE_UTF_8 (text);
+  static const char start[] = "\033]5522;type=write\033\\";
   static const char prefix[] =
     "\033]5522;type=wdata:mime=dGV4dC9wbGFpbg==;";
   static const char finish[] = "\033]5522;type=wdata\033\\";
@@ -2851,7 +2843,7 @@ as a kitty terminal.  Detection is shared with `kitty-keyboard-mode-probe'.  */)
   ptrdiff_t length = SBYTES (bytes);
   char encoded[4 * ((4096 + 2) / 3)];
 
-  kitty_clipboard_write (t, start, strlen (start));
+  kitty_clipboard_write (t, start, sizeof start - 1);
   while (offset < length)
     {
       ptrdiff_t chunk_length = min (length - offset, 4096);
@@ -5490,7 +5482,7 @@ non-nil to enable this optimization.  */);
   defsubr (&Skitty_keyboard_mode_disable);
   defsubr (&Skitty_keyboard_mode_active_p);
   defsubr (&Skitty_keyboard_mode_probe);
-  defsubr (&Skitty_clipboard_set_selection);
+  defsubr (&Skitty_clipboard_select_text);
 
 #if !defined DOS_NT && !defined HAVE_ANDROID
   default_orig_pair = NULL;
