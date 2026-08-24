@@ -2755,10 +2755,118 @@ frame's terminal).  */)
       flags = flags * 10 + (buf[i++] - '0');
 
     if (i < n && buf[i] == 'u')
-      return make_fixnum (flags);
+      {
+        t->kitty_protocols = true;
+        return make_fixnum (flags);
+      }
   }
 
   return Qnil;
+}
+
+static ptrdiff_t
+kitty_clipboard_base64_encode (const unsigned char *input, ptrdiff_t length,
+                               char *output)
+{
+  static const char alphabet[] =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  ptrdiff_t i = 0;
+  ptrdiff_t j = 0;
+
+  while (i + 2 < length)
+    {
+      unsigned int value = (input[i] << 16) | (input[i + 1] << 8)
+                           | input[i + 2];
+      output[j++] = alphabet[(value >> 18) & 63];
+      output[j++] = alphabet[(value >> 12) & 63];
+      output[j++] = alphabet[(value >> 6) & 63];
+      output[j++] = alphabet[value & 63];
+      i += 3;
+    }
+  if (i < length)
+    {
+      unsigned int value = input[i] << 16;
+      output[j++] = alphabet[(value >> 18) & 63];
+      if (i + 1 < length)
+        {
+          value |= input[i + 1] << 8;
+          output[j++] = alphabet[(value >> 12) & 63];
+          output[j++] = alphabet[(value >> 6) & 63];
+        }
+      else
+        {
+          output[j++] = alphabet[(value >> 12) & 63];
+          output[j++] = '=';
+        }
+      output[j++] = '=';
+    }
+  return j;
+}
+
+static void
+kitty_clipboard_write (struct tty_display_info *tty, const char *data,
+                       ptrdiff_t length)
+{
+  block_input ();
+  fwrite (data, 1, length, tty->output);
+  if (tty->termscript)
+    fwrite (data, 1, length, tty->termscript);
+  unblock_input ();
+}
+
+DEFUN ("kitty-clipboard-set-selection", Fkitty_clipboard_set_selection,
+       Skitty_clipboard_set_selection, 2, 3, 0, doc:
+       /* Set kitty's system selection TYPE to DATA on TTY using OSC 5522.
+
+TYPE must be `PRIMARY' or `CLIPBOARD', and DATA must be a string.  TTY may
+be a terminal object, a frame, or nil (meaning the selected frame's
+terminal).
+
+Return non-nil after sending the selection, or nil when TTY was not detected
+as a kitty terminal.  Detection is shared with `kitty-keyboard-mode-probe'.  */)
+  (Lisp_Object type, Lisp_Object data, Lisp_Object tty)
+{
+  struct terminal *terminal = decode_tty_terminal (tty);
+  if (!terminal)
+    error ("Not a tty terminal");
+
+  struct tty_display_info *t = terminal->display_info.tty;
+  if (!t->kitty_protocols || !t->output)
+    return Qnil;
+
+  CHECK_STRING (data);
+  Lisp_Object primary = intern ("PRIMARY");
+  Lisp_Object clipboard = intern ("CLIPBOARD");
+  if (!EQ (type, primary) && !EQ (type, clipboard))
+    error ("Invalid selection type");
+
+  Lisp_Object bytes = ENCODE_UTF_8 (data);
+  const char *start = EQ (type, primary)
+    ? "\033]5522;type=write:loc=primary\033\\"
+    : "\033]5522;type=write\033\\";
+  static const char prefix[] =
+    "\033]5522;type=wdata:mime=dGV4dC9wbGFpbg==;";
+  static const char finish[] = "\033]5522;type=wdata\033\\";
+  ptrdiff_t offset = 0;
+  ptrdiff_t length = SBYTES (bytes);
+  char encoded[4 * ((4096 + 2) / 3)];
+
+  kitty_clipboard_write (t, start, strlen (start));
+  while (offset < length)
+    {
+      ptrdiff_t chunk_length = min (length - offset, 4096);
+      ptrdiff_t encoded_length
+        = kitty_clipboard_base64_encode
+            ((const unsigned char *) SSDATA (bytes) + offset, chunk_length,
+             encoded);
+      kitty_clipboard_write (t, prefix, sizeof prefix - 1);
+      kitty_clipboard_write (t, encoded, encoded_length);
+      kitty_clipboard_write (t, "\033\\", 2);
+      offset += chunk_length;
+    }
+  kitty_clipboard_write (t, finish, sizeof finish - 1);
+  fflush (t->output);
+  return Qt;
 }
 
 
@@ -5382,6 +5490,7 @@ non-nil to enable this optimization.  */);
   defsubr (&Skitty_keyboard_mode_disable);
   defsubr (&Skitty_keyboard_mode_active_p);
   defsubr (&Skitty_keyboard_mode_probe);
+  defsubr (&Skitty_clipboard_set_selection);
 
 #if !defined DOS_NT && !defined HAVE_ANDROID
   default_orig_pair = NULL;

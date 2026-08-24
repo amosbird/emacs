@@ -232,6 +232,11 @@ struct tty_display_info
   /* Cost of setting the scroll window, measured in characters.  */
   int scroll_region_cost;
 
+  /* True when kitty-specific terminal protocols were detected.  This is set
+     by the kitty keyboard protocol probe and shared by other kitty protocol
+     implementations, such as OSC 5522 clipboard writes.  */
+  bool_bf kitty_protocols : 1;
+
   /* Kitty keyboard protocol enhancement flags.  0 means disabled.
      Bit 0 (1):  Disambiguate escape codes.
      Bit 1 (2):  Report event types (press/repeat/release).
