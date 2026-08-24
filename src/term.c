@@ -2810,10 +2810,54 @@ kitty_clipboard_write (struct tty_display_info *tty, const char *data,
                        ptrdiff_t length)
 {
   block_input ();
-  fwrite (data, 1, length, tty->output);
+  size_t written = fwrite (data, 1, length, tty->output);
+  int failed = written != length || fflush (tty->output) == EOF;
   if (tty->termscript)
     fwrite (data, 1, length, tty->termscript);
   unblock_input ();
+  if (failed)
+    error ("Failed to write kitty clipboard data");
+}
+
+static void
+kitty_clipboard_read_response (struct tty_display_info *tty)
+{
+  int fd = fileno (tty->input);
+  char response[256];
+  ptrdiff_t used = 0;
+  struct timespec timeout = { .tv_sec = 1, .tv_nsec = 0 };
+
+  while (used < sizeof response - 1)
+    {
+      fd_set readfds;
+      FD_ZERO (&readfds);
+      FD_SET (fd, &readfds);
+      int ready = pselect (fd + 1, &readfds, NULL, NULL, &timeout, NULL);
+      if (ready <= 0)
+        break;
+
+      ssize_t count = read (fd, response + used, sizeof response - 1 - used);
+      if (count <= 0)
+        break;
+      used += count;
+      if (used >= 2 && response[used - 2] == '\033'
+          && response[used - 1] == '\\')
+        break;
+      timeout = (struct timespec) { .tv_sec = 0, .tv_nsec = 100000000 };
+    }
+
+  response[used] = '\0';
+  static const char prefix[] = "\033]5522;type=write:status=";
+  char *status = strstr (response, prefix);
+  if (!status)
+    error ("No response to kitty clipboard write");
+  status += sizeof prefix - 1;
+  char *end = strstr (status, "\033\\");
+  if (!end)
+    error ("Incomplete response to kitty clipboard write");
+  *end = '\0';
+  if (strcmp (status, "DONE") != 0)
+    error ("Kitty clipboard write failed: %s", status);
 }
 
 DEFUN ("kitty-clipboard-select-text", Fkitty_clipboard_select_text,
@@ -2857,8 +2901,8 @@ TTY.  TEXT is encoded as UTF-8 and sent in 4096-byte chunks.  */)
       offset += chunk_length;
     }
   kitty_clipboard_write (t, finish, sizeof finish - 1);
-  fflush (t->output);
-  return Qt;
+  kitty_clipboard_read_response (t);
+  return Qnil;
 }
 
 
