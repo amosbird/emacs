@@ -8760,7 +8760,7 @@ tty_read_avail_input (struct terminal *terminal,
 				       : &params[param_count - 1];
 		  if (*p > INT_MAX / 10
 		      || (*p == INT_MAX / 10 && (c - '0') > INT_MAX % 10))
-		    goto emit_raw_csi_sequence;  /* Overflow, bail out.  */
+		    goto scan_raw_csi_sequence;  /* Overflow, bail out.  */
 		  *p = *p * 10 + (c - '0');
 		  j++;
 		}
@@ -8786,9 +8786,9 @@ tty_read_avail_input (struct terminal *terminal,
 		}
 	      else
 		{
-		  /* Unknown character in sequence - not a kitty sequence.
-		     Pass through the ESC byte as-is.  */
-		  break;
+		  /* Not a kitty sequence.  Find its CSI final byte so the
+		     complete sequence is passed through as one batch.  */
+		  goto scan_raw_csi_sequence;
 		}
 	    }
 
@@ -8996,6 +8996,25 @@ tty_read_avail_input (struct terminal *terminal,
 	      && buf.code == quit_char)
 	    break;
 	  continue;
+
+	scan_raw_csi_sequence:
+	  /* CSI parameter and intermediate bytes occupy 0x20..0x3f; the
+	     final byte occupies 0x40..0x7e.  In particular, '<' is a
+	     private parameter prefix used by SGR mouse sequences.  */
+	  while (j < nread && !(cbuf[j] >= 0x40 && cbuf[j] <= 0x7e))
+	    j++;
+	  if (j < nread)
+	    j++;
+	  else
+	    {
+	      int remaining = nread - seq_start;
+	      if (remaining <= (int) sizeof tty->kitty_pending)
+		{
+		  memcpy (tty->kitty_pending, cbuf + seq_start, remaining);
+		  tty->kitty_pending_count = remaining;
+		  break;
+		}
+	    }
 
 	emit_raw_csi_sequence:
 	  /* Unrecognized CSI sequence: emit all bytes from seq_start

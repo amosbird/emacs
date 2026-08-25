@@ -81,5 +81,32 @@
     (should-error (read-event "foo: "))
     (should-error (read-char-exclusive "foo: "))))
 
+(ert-deftest keyboard-kitty-unknown-csi-scans-through-final-byte ()
+  "Ensure Kitty fallback keeps private CSI sequences contiguous."
+  (with-temp-buffer
+    (insert-file-contents (expand-file-name "src/keyboard.c" source-directory))
+    (goto-char (point-min))
+    (search-forward "scan_raw_csi_sequence:")
+    (let ((scan-start (point)))
+      (search-forward "emit_raw_csi_sequence:")
+      (let ((fallback (buffer-substring-no-properties scan-start (point))))
+        ;; '<' is a private parameter byte, not a CSI final byte.  The
+        ;; fallback must scan through M/m in SGR mouse reports before emitting.
+        (dolist (sequence '("\e[<66;12;34M" "\e[<67;12;34M"
+                            "\e[<66;12;34m" "\e[<67;12;34m"))
+          (let ((j 2))
+            (while (and (< j (length sequence))
+                        (not (<= #x40 (aref sequence j) #x7e)))
+              (setq j (1+ j)))
+            (should (= (1+ j) (length sequence)))))
+        (should (string-match-p "cbuf\\[j\\] >= 0x40" fallback))
+        (should (string-match-p "cbuf\\[j\\] <= 0x7e" fallback))
+        (should (string-match-p "if (j < nread)" fallback))
+        (should (string-match-p (regexp-quote "j++;") fallback)))))
+  (with-temp-buffer
+    (insert-file-contents (expand-file-name "src/keyboard.c" source-directory))
+    (goto-char (point-min))
+    (should-not (search-forward "Unknown character in sequence" nil t))))
+
 (provide 'keyboard-tests)
 ;;; keyboard-tests.el ends here
