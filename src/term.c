@@ -2820,44 +2820,79 @@ kitty_clipboard_write (struct tty_display_info *tty, const char *data,
 }
 
 static void
+kitty_clipboard_response_unwind (void *arg)
+{
+  struct tty_display_info *tty = arg;
+  tty->kitty_clipboard_response_pending = false;
+  tty->kitty_clipboard_response_count = 0;
+}
+
+static void
 kitty_clipboard_read_response (struct tty_display_info *tty)
 {
-  int fd = fileno (tty->input);
-  char response[256];
-  ptrdiff_t used = 0;
-  struct timespec timeout = { .tv_sec = 1, .tv_nsec = 0 };
-
-  while (used < sizeof response - 1)
+  struct timespec deadline
+    = timespec_add (current_timespec (), make_timespec (1, 0));
+  while (tty->kitty_clipboard_response_status == 0)
     {
-      fd_set readfds;
-      FD_ZERO (&readfds);
-      FD_SET (fd, &readfds);
-      int ready = pselect (fd + 1, &readfds, NULL, NULL, &timeout, NULL);
-      if (ready <= 0)
+      struct timespec remaining = timespec_sub (deadline, current_timespec ());
+      if (remaining.tv_sec < 0)
         break;
-
-      ssize_t count = read (fd, response + used, sizeof response - 1 - used);
-      if (count <= 0)
-        break;
-      used += count;
-      if (used >= 2 && response[used - 2] == '\033'
-          && response[used - 1] == '\\')
-        break;
-      timeout = (struct timespec) { .tv_sec = 0, .tv_nsec = 100000000 };
+      struct timespec interval = make_timespec (0, 10000000);
+      if (timespec_cmp (remaining, interval) < 0)
+        interval = remaining;
+      wait_reading_process_output (interval.tv_sec, interval.tv_nsec, 0,
+                                   false, Qnil, NULL, 0);
     }
 
-  response[used] = '\0';
-  static const char prefix[] = "\033]5522;type=write:status=";
-  char *status = strstr (response, prefix);
-  if (!status)
+  int status = tty->kitty_clipboard_response_status;
+  if (status == 0)
     error ("No response to kitty clipboard write");
-  status += sizeof prefix - 1;
-  char *end = strstr (status, "\033\\");
-  if (!end)
-    error ("Incomplete response to kitty clipboard write");
-  *end = '\0';
-  if (strcmp (status, "DONE") != 0)
-    error ("Kitty clipboard write failed: %s", status);
+  if (status == -2)
+    error ("Kitty clipboard response is too long");
+  if (status < 0)
+    error ("Kitty clipboard write failed");
+}
+
+DEFUN ("tty--test-filter-osc5522-response",
+       Ftty__test_filter_osc5522_response,
+       Stty__test_filter_osc5522_response, 1, 1, 0,
+       doc: /* Filter CHUNKS as a pending OSC 5522 response, for testing.
+Return (STATUS . INPUT), where INPUT contains every unrelated byte.  */)
+  (Lisp_Object chunks)
+{
+  struct tty_display_info tty = { 0 };
+  tty.kitty_clipboard_response_pending = true;
+  ptrdiff_t capacity = 0;
+  Lisp_Object tail = chunks;
+  for (; CONSP (tail); tail = XCDR (tail))
+    {
+      CHECK_STRING (XCAR (tail));
+      capacity += SBYTES (XCAR (tail));
+    }
+  CHECK_LIST_END (tail, chunks);
+
+  unsigned char *output = xmalloc (capacity ? capacity : 1);
+  ptrdiff_t used = 0;
+  for (tail = chunks; CONSP (tail); tail = XCDR (tail))
+    {
+      Lisp_Object chunk = XCAR (tail);
+      ptrdiff_t length = SBYTES (chunk);
+      ptrdiff_t available
+        = KBD_BUFFER_SIZE - 1 - tty.kitty_clipboard_response_count;
+      if (length > available)
+        args_out_of_range (chunk, make_fixnum (available));
+      unsigned char input[KBD_BUFFER_SIZE - 1];
+      memcpy (input, SSDATA (chunk), length);
+      int filtered = tty_filter_osc5522_response (&tty, input, length);
+      memcpy (output + used, input, filtered);
+      used += filtered;
+    }
+
+  Lisp_Object result
+    = Fcons (make_fixnum (tty.kitty_clipboard_response_status),
+             make_unibyte_string ((char *) output, used));
+  xfree (output);
+  return result;
 }
 
 DEFUN ("kitty-clipboard-select-text", Fkitty_clipboard_select_text,
@@ -2887,6 +2922,15 @@ TTY.  TEXT is encoded as UTF-8 and sent in 4096-byte chunks.  */)
   ptrdiff_t length = SBYTES (bytes);
   char encoded[4 * ((4096 + 2) / 3)];
 
+  specpdl_ref count = SPECPDL_INDEX ();
+  t->kitty_clipboard_response_pending = true;
+  t->kitty_clipboard_response_count = 0;
+  t->kitty_clipboard_response_status = 0;
+  record_unwind_protect_ptr (kitty_clipboard_response_unwind, t);
+
+  /* Arm the normal TTY input filter before the first packet.  Kitty may
+     report an error immediately, and unblock_input can dispatch SIGIO after
+     any of the writes below.  */
   kitty_clipboard_write (t, start, sizeof start - 1);
   while (offset < length)
     {
@@ -2902,7 +2946,7 @@ TTY.  TEXT is encoded as UTF-8 and sent in 4096-byte chunks.  */)
     }
   kitty_clipboard_write (t, finish, sizeof finish - 1);
   kitty_clipboard_read_response (t);
-  return Qnil;
+  return unbind_to (count, Qnil);
 }
 
 
@@ -5527,6 +5571,7 @@ non-nil to enable this optimization.  */);
   defsubr (&Skitty_keyboard_mode_active_p);
   defsubr (&Skitty_keyboard_mode_probe);
   defsubr (&Skitty_clipboard_select_text);
+  defsubr (&Stty__test_filter_osc5522_response);
 
 #if !defined DOS_NT && !defined HAVE_ANDROID
   default_orig_pair = NULL;

@@ -108,5 +108,28 @@
     (goto-char (point-min))
     (should-not (search-forward "Unknown character in sequence" nil t))))
 
+(ert-deftest keyboard-kitty-osc5522-response-filter ()
+  "OSC 5522 responses don't leak into or consume normal terminal input."
+  (skip-unless (fboundp 'tty--test-filter-osc5522-response))
+  (let ((response "\e]5522;type=write:status=DONE\e\\"))
+    ;; Input arriving before and after a response in one read is preserved.
+    (should (equal (tty--test-filter-osc5522-response
+                    (list (concat "before" response "after")))
+                   '(1 . "beforeafter")))
+    ;; Every boundary may split the response, including ESC ST.
+    (dotimes (split (1+ (length response)))
+      (should (equal
+               (tty--test-filter-osc5522-response
+                (list (concat "a" (substring response 0 split))
+                      (concat (substring response split) "b")))
+               '(1 . "ab"))))
+    ;; Prefix-like unrelated input isn't lost, even across reads.
+    (should (equal (tty--test-filter-osc5522-response
+                    '("x\e]552" "x" "y\e]5522;type=write:status=DONE\e\\z"))
+                   '(1 . "x\e]552xyz")))
+    (should (equal (tty--test-filter-osc5522-response
+                    '("x\e]5522;type=write:status=ERROR\e\\y"))
+                   '(-1 . "xy")))))
+
 (provide 'keyboard-tests)
 ;;; keyboard-tests.el ends here

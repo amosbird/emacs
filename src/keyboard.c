@@ -8549,6 +8549,84 @@ tty_collect_bracketed_paste (unsigned char *cbuf, int start, int nread,
   return result;
 }
 
+/* Remove a pending kitty OSC 5522 clipboard response from BUF in place.
+   Bytes unrelated to that response retain their order and are returned to the
+   normal TTY decoder.  A possible response prefix or an incomplete response
+   is retained across calls in the tty object.  */
+int
+tty_filter_osc5522_response (struct tty_display_info *tty,
+                             unsigned char *buf, int length)
+{
+  static const unsigned char prefix[] = "\033]5522;type=write:status=";
+  static const unsigned char terminator[] = "\033\\";
+  int held = tty->kitty_clipboard_response_count;
+  int total = held + length;
+  unsigned char input[sizeof tty->kitty_clipboard_response + KBD_BUFFER_SIZE];
+  int output = 0;
+  int start = -1;
+
+  eassert (total <= (int) sizeof input);
+  memcpy (input, tty->kitty_clipboard_response, held);
+  memcpy (input + held, buf, length);
+  tty->kitty_clipboard_response_count = 0;
+
+  for (int i = 0; i + (int) sizeof prefix - 1 <= total; i++)
+    if (memcmp (input + i, prefix, sizeof prefix - 1) == 0)
+      {
+        start = i;
+        break;
+      }
+
+  if (start < 0)
+    {
+      int keep = 0;
+      int limit = min (total, (int) sizeof prefix - 2);
+      for (int candidate = 1; candidate <= limit; candidate++)
+        if (memcmp (input + total - candidate, prefix, candidate) == 0)
+          keep = candidate;
+      output = total - keep;
+      memcpy (buf, input, output);
+      if (keep)
+        memcpy (tty->kitty_clipboard_response, input + output, keep);
+      tty->kitty_clipboard_response_count = keep;
+      return output;
+    }
+
+  memcpy (buf, input, start);
+  output = start;
+  int end = -1;
+  for (int i = start + sizeof prefix - 1; i + 1 < total; i++)
+    if (memcmp (input + i, terminator, sizeof terminator - 1) == 0)
+      {
+        end = i;
+        break;
+      }
+
+  if (end < 0)
+    {
+      int response_length = total - start;
+      if (response_length <= (int) sizeof tty->kitty_clipboard_response)
+        {
+          memcpy (tty->kitty_clipboard_response, input + start,
+                  response_length);
+          tty->kitty_clipboard_response_count = response_length;
+        }
+      else
+        tty->kitty_clipboard_response_status = -2;
+      return output;
+    }
+
+  int status_start = start + sizeof prefix - 1;
+  int status_length = end - status_start;
+  tty->kitty_clipboard_response_status
+    = status_length == 4 && memcmp (input + status_start, "DONE", 4) == 0
+      ? 1 : -1;
+  int after = end + sizeof terminator - 1;
+  memcpy (buf + output, input + after, total - after);
+  output += total - after;
+  return output;
+}
+
 /* This is the tty way of reading available input.
 
    Note that each terminal device has its own `struct terminal' object,
@@ -8655,6 +8733,9 @@ tty_read_avail_input (struct terminal *terminal,
   if (n_to_read > buffer_free)
     n_to_read = buffer_free;
 #endif	/* subprocesses */
+  if (tty->kitty_clipboard_response_pending
+      && n_to_read > sizeof cbuf - tty->kitty_clipboard_response_count)
+    n_to_read = sizeof cbuf - tty->kitty_clipboard_response_count;
 
   /* Now read; for one reason or another, this will not block.
      NREAD is set to the number of chars read.  */
@@ -8683,6 +8764,9 @@ tty_read_avail_input (struct terminal *terminal,
 
   if (nread <= 0)
     return nread;
+
+  if (tty->kitty_clipboard_response_pending)
+    nread = tty_filter_osc5522_response (tty, cbuf, nread);
 
 #endif /* not MSDOS */
 #endif /* not WINDOWSNT */

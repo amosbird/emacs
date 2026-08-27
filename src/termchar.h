@@ -245,6 +245,14 @@ struct tty_display_info
      Bit 4 (16): Report associated text.  */
   int kitty_keyboard_mode;
 
+  /* Bytes held while recognizing an OSC 5522 clipboard response.  The normal
+     TTY input reader filters the response and leaves all other bytes in its
+     input stream.  */
+  unsigned char kitty_clipboard_response[256];
+  int kitty_clipboard_response_count;
+  int kitty_clipboard_response_status;
+  bool_bf kitty_clipboard_response_pending : 1;
+
   /* Buffer for incomplete escape sequences from kitty keyboard protocol.
      When a CSI sequence spans two reads, the partial bytes are saved here
      and prepended to the next read.  */
@@ -265,6 +273,8 @@ extern struct tty_display_info *tty_list;
 #define CURTTY() FRAME_TTY (SELECTED_FRAME())
 
 struct input_event;
+extern int tty_filter_osc5522_response (struct tty_display_info *,
+                                        unsigned char *, int);
 extern Lisp_Object tty_handle_tab_bar_click (struct frame *, int, int, bool,
 					     struct input_event *);
 
