@@ -252,6 +252,7 @@ struct tty_display_info
   int kitty_clipboard_response_count;
   int kitty_clipboard_response_status;
   bool_bf kitty_clipboard_response_pending : 1;
+  bool_bf kitty_clipboard_response_discard : 1;
 
   /* Buffer for incomplete escape sequences from kitty keyboard protocol.
      When a CSI sequence spans two reads, the partial bytes are saved here

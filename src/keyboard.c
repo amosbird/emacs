@@ -8570,6 +8570,27 @@ tty_filter_osc5522_response (struct tty_display_info *tty,
   memcpy (input + held, buf, length);
   tty->kitty_clipboard_response_count = 0;
 
+  /* An oversized response is still terminal protocol, so discard through its
+     terminator instead of exposing the remaining payload as keyboard input. */
+  if (tty->kitty_clipboard_response_discard)
+    {
+      for (int i = 0; i + 1 < total; i++)
+        if (input[i] == '\033' && input[i + 1] == '\\')
+          {
+            int after = i + 2;
+            memcpy (buf, input + after, total - after);
+            tty->kitty_clipboard_response_discard = false;
+            tty->kitty_clipboard_response_pending = false;
+            return total - after;
+          }
+      if (total > 0 && input[total - 1] == '\033')
+        {
+          tty->kitty_clipboard_response[0] = '\033';
+          tty->kitty_clipboard_response_count = 1;
+        }
+      return 0;
+    }
+
   for (int i = 0; i + (int) sizeof prefix - 1 <= total; i++)
     if (memcmp (input + i, prefix, sizeof prefix - 1) == 0)
       {
@@ -8612,7 +8633,10 @@ tty_filter_osc5522_response (struct tty_display_info *tty,
           tty->kitty_clipboard_response_count = response_length;
         }
       else
-        tty->kitty_clipboard_response_status = -2;
+        {
+          tty->kitty_clipboard_response_status = -2;
+          tty->kitty_clipboard_response_discard = true;
+        }
       return output;
     }
 
@@ -8621,6 +8645,7 @@ tty_filter_osc5522_response (struct tty_display_info *tty,
   tty->kitty_clipboard_response_status
     = status_length == 4 && memcmp (input + status_start, "DONE", 4) == 0
       ? 1 : -1;
+  tty->kitty_clipboard_response_pending = false;
   int after = end + sizeof terminator - 1;
   memcpy (buf + output, input + after, total - after);
   output += total - after;

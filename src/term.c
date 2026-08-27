@@ -2823,8 +2823,14 @@ static void
 kitty_clipboard_response_unwind (void *arg)
 {
   struct tty_display_info *tty = arg;
-  tty->kitty_clipboard_response_pending = false;
-  tty->kitty_clipboard_response_count = 0;
+  /* If waiting timed out or was interrupted, keep filtering until the late
+     terminal reply arrives; otherwise its OSC payload becomes keyboard input.
+     A completed reply has already set a nonzero status.  */
+  if (tty->kitty_clipboard_response_status != 0)
+    {
+      tty->kitty_clipboard_response_pending = false;
+      tty->kitty_clipboard_response_count = 0;
+    }
 }
 
 static void

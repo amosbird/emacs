@@ -129,7 +129,15 @@
                    '(1 . "x\e]552xyz")))
     (should (equal (tty--test-filter-osc5522-response
                     '("x\e]5522;type=write:status=ERROR\e\\y"))
-                   '(-1 . "xy")))))
+                   '(-1 . "xy")))
+    ;; An oversized response remains protocol data: drain it through ST and
+    ;; preserve only ordinary input following the terminator.
+    (should (equal
+             (tty--test-filter-osc5522-response
+              (list (concat "x\e]5522;type=write:status="
+                            (make-string 300 ?X))
+                    "tail\e\\y"))
+             '(-2 . "xy")))))
 
 (provide 'keyboard-tests)
 ;;; keyboard-tests.el ends here
