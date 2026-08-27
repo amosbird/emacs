@@ -2819,55 +2819,14 @@ kitty_clipboard_write (struct tty_display_info *tty, const char *data,
     error ("Failed to write kitty clipboard data");
 }
 
-static void
-kitty_clipboard_response_unwind (void *arg)
-{
-  struct tty_display_info *tty = arg;
-  /* If waiting timed out or was interrupted, keep filtering until the late
-     terminal reply arrives; otherwise its OSC payload becomes keyboard input.
-     A completed reply has already set a nonzero status.  */
-  if (tty->kitty_clipboard_response_status != 0)
-    {
-      tty->kitty_clipboard_response_pending = false;
-      tty->kitty_clipboard_response_count = 0;
-    }
-}
-
-static void
-kitty_clipboard_read_response (struct tty_display_info *tty)
-{
-  struct timespec deadline
-    = timespec_add (current_timespec (), make_timespec (1, 0));
-  while (tty->kitty_clipboard_response_status == 0)
-    {
-      struct timespec remaining = timespec_sub (deadline, current_timespec ());
-      if (remaining.tv_sec < 0)
-        break;
-      struct timespec interval = make_timespec (0, 10000000);
-      if (timespec_cmp (remaining, interval) < 0)
-        interval = remaining;
-      wait_reading_process_output (interval.tv_sec, interval.tv_nsec, 0,
-                                   false, Qnil, NULL, 0);
-    }
-
-  int status = tty->kitty_clipboard_response_status;
-  if (status == 0)
-    error ("No response to kitty clipboard write");
-  if (status == -2)
-    error ("Kitty clipboard response is too long");
-  if (status < 0)
-    error ("Kitty clipboard write failed");
-}
-
 DEFUN ("tty--test-filter-osc5522-response",
        Ftty__test_filter_osc5522_response,
        Stty__test_filter_osc5522_response, 1, 1, 0,
-       doc: /* Filter CHUNKS as a pending OSC 5522 response, for testing.
-Return (STATUS . INPUT), where INPUT contains every unrelated byte.  */)
+       doc: /* Filter OSC 5522 replies from CHUNKS, for testing.
+Return all bytes which are not part of a reply.  */)
   (Lisp_Object chunks)
 {
   struct tty_display_info tty = { 0 };
-  tty.kitty_clipboard_response_pending = true;
   ptrdiff_t capacity = 0;
   Lisp_Object tail = chunks;
   for (; CONSP (tail); tail = XCDR (tail))
@@ -2894,9 +2853,7 @@ Return (STATUS . INPUT), where INPUT contains every unrelated byte.  */)
       used += filtered;
     }
 
-  Lisp_Object result
-    = Fcons (make_fixnum (tty.kitty_clipboard_response_status),
-             make_unibyte_string ((char *) output, used));
+  Lisp_Object result = make_unibyte_string ((char *) output, used);
   xfree (output);
   return result;
 }
@@ -2928,15 +2885,6 @@ TTY.  TEXT is encoded as UTF-8 and sent in 4096-byte chunks.  */)
   ptrdiff_t length = SBYTES (bytes);
   char encoded[4 * ((4096 + 2) / 3)];
 
-  specpdl_ref count = SPECPDL_INDEX ();
-  t->kitty_clipboard_response_pending = true;
-  t->kitty_clipboard_response_count = 0;
-  t->kitty_clipboard_response_status = 0;
-  record_unwind_protect_ptr (kitty_clipboard_response_unwind, t);
-
-  /* Arm the normal TTY input filter before the first packet.  Kitty may
-     report an error immediately, and unblock_input can dispatch SIGIO after
-     any of the writes below.  */
   kitty_clipboard_write (t, start, sizeof start - 1);
   while (offset < length)
     {
@@ -2951,8 +2899,7 @@ TTY.  TEXT is encoded as UTF-8 and sent in 4096-byte chunks.  */)
       offset += chunk_length;
     }
   kitty_clipboard_write (t, finish, sizeof finish - 1);
-  kitty_clipboard_read_response (t);
-  return unbind_to (count, Qnil);
+  return Qnil;
 }
 
 

@@ -246,12 +246,10 @@ struct tty_display_info
   int kitty_keyboard_mode;
 
   /* Bytes held while recognizing an OSC 5522 clipboard response.  The normal
-     TTY input reader filters the response and leaves all other bytes in its
+     TTY input reader always filters replies and leaves all other bytes in its
      input stream.  */
   unsigned char kitty_clipboard_response[256];
   int kitty_clipboard_response_count;
-  int kitty_clipboard_response_status;
-  bool_bf kitty_clipboard_response_pending : 1;
   bool_bf kitty_clipboard_response_discard : 1;
 
   /* Buffer for incomplete escape sequences from kitty keyboard protocol.

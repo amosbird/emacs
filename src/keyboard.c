@@ -8549,106 +8549,88 @@ tty_collect_bracketed_paste (unsigned char *cbuf, int start, int nread,
   return result;
 }
 
-/* Remove a pending kitty OSC 5522 clipboard response from BUF in place.
-   Bytes unrelated to that response retain their order and are returned to the
-   normal TTY decoder.  A possible response prefix or an incomplete response
-   is retained across calls in the tty object.  */
+/* Filter OSC 5522 terminal replies from BUF in place.  Bytes which might be
+   the start of a reply are retained across calls in the tty object.  */
 int
 tty_filter_osc5522_response (struct tty_display_info *tty,
                              unsigned char *buf, int length)
 {
-  static const unsigned char prefix[] = "\033]5522;type=write:status=";
-  static const unsigned char terminator[] = "\033\\";
-  int held = tty->kitty_clipboard_response_count;
-  int total = held + length;
-  unsigned char input[sizeof tty->kitty_clipboard_response + KBD_BUFFER_SIZE];
+  static const unsigned char prefix[] = "\033]5522;";
+  unsigned char input[KBD_BUFFER_SIZE - 1];
   int output = 0;
-  int start = -1;
 
-  eassert (total <= (int) sizeof input);
-  memcpy (input, tty->kitty_clipboard_response, held);
-  memcpy (input + held, buf, length);
-  tty->kitty_clipboard_response_count = 0;
-
-  /* An oversized response is still terminal protocol, so discard through its
-     terminator instead of exposing the remaining payload as keyboard input. */
-  if (tty->kitty_clipboard_response_discard)
+  memcpy (input, buf, length);
+  for (int i = 0; i < length;)
     {
-      for (int i = 0; i + 1 < total; i++)
-        if (input[i] == '\033' && input[i + 1] == '\\')
-          {
-            int after = i + 2;
-            memcpy (buf, input + after, total - after);
-            tty->kitty_clipboard_response_discard = false;
-            tty->kitty_clipboard_response_pending = false;
-            return total - after;
-          }
-      if (total > 0 && input[total - 1] == '\033')
+      unsigned char byte = input[i];
+      int held = tty->kitty_clipboard_response_count;
+
+      /* After recognizing OSC 5522, an overlong or malformed reply remains
+         terminal protocol.  Drain it through either form of OSC terminator.  */
+      if (tty->kitty_clipboard_response_discard)
         {
-          tty->kitty_clipboard_response[0] = '\033';
-          tty->kitty_clipboard_response_count = 1;
+          bool terminated
+            = byte == '\a'
+              || (held == 1 && tty->kitty_clipboard_response[0] == '\033'
+                  && byte == '\\');
+          tty->kitty_clipboard_response_count = byte == '\033' ? 1 : 0;
+          if (terminated)
+            {
+              tty->kitty_clipboard_response_count = 0;
+              tty->kitty_clipboard_response_discard = false;
+            }
+          i++;
+          continue;
         }
-      return 0;
+
+      /* Before the prefix is complete, hold only bytes which match it.  On a
+         mismatch, release them immediately and reconsider BYTE as a possible
+         new ESC prefix.  */
+      if (held < (int) sizeof prefix - 1)
+        {
+          if (byte == prefix[held])
+            {
+              tty->kitty_clipboard_response[held] = byte;
+              tty->kitty_clipboard_response_count = held + 1;
+              i++;
+              continue;
+            }
+
+          if (held)
+            {
+              memcpy (buf + output, tty->kitty_clipboard_response, held);
+              output += held;
+              tty->kitty_clipboard_response_count = 0;
+              continue;
+            }
+
+          buf[output++] = byte;
+          i++;
+          continue;
+        }
+
+      /* The OSC number identifies the reply independently of metadata order,
+         optional fields, status value, and transaction id.  Acknowledgements
+         are intentionally ignored.  */
+      if (held < (int) sizeof tty->kitty_clipboard_response)
+        {
+          tty->kitty_clipboard_response[held++] = byte;
+          tty->kitty_clipboard_response_count = held;
+          i++;
+
+          if (byte == '\a'
+              || (held >= 2
+                  && tty->kitty_clipboard_response[held - 2] == '\033'
+                  && byte == '\\'))
+            tty->kitty_clipboard_response_count = 0;
+          else if (held == (int) sizeof tty->kitty_clipboard_response)
+            {
+              tty->kitty_clipboard_response_count = byte == '\033' ? 1 : 0;
+              tty->kitty_clipboard_response_discard = true;
+            }
+        }
     }
 
-  for (int i = 0; i + (int) sizeof prefix - 1 <= total; i++)
-    if (memcmp (input + i, prefix, sizeof prefix - 1) == 0)
-      {
-        start = i;
-        break;
-      }
-
-  if (start < 0)
-    {
-      int keep = 0;
-      int limit = min (total, (int) sizeof prefix - 2);
-      for (int candidate = 1; candidate <= limit; candidate++)
-        if (memcmp (input + total - candidate, prefix, candidate) == 0)
-          keep = candidate;
-      output = total - keep;
-      memcpy (buf, input, output);
-      if (keep)
-        memcpy (tty->kitty_clipboard_response, input + output, keep);
-      tty->kitty_clipboard_response_count = keep;
-      return output;
-    }
-
-  memcpy (buf, input, start);
-  output = start;
-  int end = -1;
-  for (int i = start + sizeof prefix - 1; i + 1 < total; i++)
-    if (memcmp (input + i, terminator, sizeof terminator - 1) == 0)
-      {
-        end = i;
-        break;
-      }
-
-  if (end < 0)
-    {
-      int response_length = total - start;
-      if (response_length <= (int) sizeof tty->kitty_clipboard_response)
-        {
-          memcpy (tty->kitty_clipboard_response, input + start,
-                  response_length);
-          tty->kitty_clipboard_response_count = response_length;
-        }
-      else
-        {
-          tty->kitty_clipboard_response_status = -2;
-          tty->kitty_clipboard_response_discard = true;
-        }
-      return output;
-    }
-
-  int status_start = start + sizeof prefix - 1;
-  int status_length = end - status_start;
-  tty->kitty_clipboard_response_status
-    = status_length == 4 && memcmp (input + status_start, "DONE", 4) == 0
-      ? 1 : -1;
-  tty->kitty_clipboard_response_pending = false;
-  int after = end + sizeof terminator - 1;
-  memcpy (buf + output, input + after, total - after);
-  output += total - after;
   return output;
 }
 
@@ -8757,9 +8739,18 @@ tty_read_avail_input (struct terminal *terminal,
   /* Don't read more than we can store.  */
   if (n_to_read > buffer_free)
     n_to_read = buffer_free;
-#endif	/* subprocesses */
-  if (tty->kitty_clipboard_response_pending
-      && n_to_read > sizeof cbuf - tty->kitty_clipboard_response_count)
+  /* Account for speculative OSC prefix bytes which may be released back into
+     the keyboard ring when the next byte disproves the prefix.  */
+  int response_held = tty->kitty_clipboard_response_count;
+  if (!tty->kitty_clipboard_response_discard)
+    {
+      if (buffer_free <= response_held)
+        return 0;
+      if (n_to_read > buffer_free - response_held)
+        n_to_read = buffer_free - response_held;
+    }
+#endif
+  if (n_to_read > sizeof cbuf - tty->kitty_clipboard_response_count)
     n_to_read = sizeof cbuf - tty->kitty_clipboard_response_count;
 
   /* Now read; for one reason or another, this will not block.
@@ -8790,8 +8781,7 @@ tty_read_avail_input (struct terminal *terminal,
   if (nread <= 0)
     return nread;
 
-  if (tty->kitty_clipboard_response_pending)
-    nread = tty_filter_osc5522_response (tty, cbuf, nread);
+  nread = tty_filter_osc5522_response (tty, cbuf, nread);
 
 #endif /* not MSDOS */
 #endif /* not WINDOWSNT */

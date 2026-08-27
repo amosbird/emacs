@@ -111,33 +111,46 @@
 (ert-deftest keyboard-kitty-osc5522-response-filter ()
   "OSC 5522 responses don't leak into or consume normal terminal input."
   (skip-unless (fboundp 'tty--test-filter-osc5522-response))
-  (let ((response "\e]5522;type=write:status=DONE\e\\"))
-    ;; Input arriving before and after a response in one read is preserved.
-    (should (equal (tty--test-filter-osc5522-response
-                    (list (concat "before" response "after")))
-                   '(1 . "beforeafter")))
-    ;; Every boundary may split the response, including ESC ST.
-    (dotimes (split (1+ (length response)))
-      (should (equal
-               (tty--test-filter-osc5522-response
-                (list (concat "a" (substring response 0 split))
-                      (concat (substring response split) "b")))
-               '(1 . "ab"))))
-    ;; Prefix-like unrelated input isn't lost, even across reads.
-    (should (equal (tty--test-filter-osc5522-response
-                    '("x\e]552" "x" "y\e]5522;type=write:status=DONE\e\\z"))
-                   '(1 . "x\e]552xyz")))
-    (should (equal (tty--test-filter-osc5522-response
-                    '("x\e]5522;type=write:status=ERROR\e\\y"))
-                   '(-1 . "xy")))
-    ;; An oversized response remains protocol data: drain it through ST and
-    ;; preserve only ordinary input following the terminator.
+  (let ((responses '("\e]5522;type=write:status=DONE\e\\"
+                     "\e]5522;status=DONE:type=write:id=17\e\\"
+                     "\e]5522;id=17:status=ERROR:type=write:message=bad\a")))
+    ;; Every boundary may split each supported response, including ESC ST.
+    (dolist (response responses)
+      (dotimes (split (1+ (length response)))
+        (should (equal
+                 (tty--test-filter-osc5522-response
+                  (list (concat "before" (substring response 0 split))
+                        (concat (substring response split) "after")))
+                 "beforeafter"))))
+    ;; Multiple replies in one read and replies split across many reads vanish.
     (should (equal
              (tty--test-filter-osc5522-response
-              (list (concat "x\e]5522;type=write:status="
-                            (make-string 300 ?X))
-                    "tail\e\\y"))
-             '(-2 . "xy")))))
+              (list (concat "a" (nth 0 responses) (nth 1 responses) "b")))
+             "ab"))
+    (should (equal
+             (tty--test-filter-osc5522-response
+              (mapcar #'char-to-string (string-to-list (nth 0 responses))))
+             ""))
+    ;; Prefix-like unrelated input is released at the first mismatch.
+    (dolist (chunks '(("x\e]552" "x" "y")
+                      ("\eX")
+                      ("\e]5523;type=write:status=DONE\e\\")
+                      ("\e]5522xordinary")))
+      (should (equal (tty--test-filter-osc5522-response chunks)
+                     (apply #'concat chunks))))
+    ;; Once OSC 5522 is recognized, malformed and oversized replies are
+    ;; bounded and drained through ST or BEL; following input is preserved.
+    (dolist (terminator '("\e\\" "\a"))
+      (should (equal
+               (tty--test-filter-osc5522-response
+                (list (concat "x\e]5522;type=write:"
+                              (make-string 300 ?X))
+                      (concat "tail" terminator "y")))
+               "xy"))
+      (should (equal
+               (tty--test-filter-osc5522-response
+                (list (concat "x\e]5522;malformed" terminator "y")))
+               "xy")))))
 
 (provide 'keyboard-tests)
 ;;; keyboard-tests.el ends here
